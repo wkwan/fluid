@@ -10,6 +10,7 @@ impl Plugin for SimulationPlugin {
         app.init_resource::<FluidParams>()
            .init_resource::<MouseInteraction>()
            .init_resource::<SpatialHashResource>()
+           .init_resource::<DebugUiState>()
            .add_systems(Startup, setup_simulation)
            .add_systems(Update, handle_input)
            .add_systems(Update, apply_external_forces)
@@ -20,13 +21,21 @@ impl Plugin for SimulationPlugin {
            .add_systems(Update, update_positions)
            .add_systems(Update, handle_collisions)
            .add_systems(Update, update_sprite_colors)
-           .add_systems(Update, update_fps_display);
+           .add_systems(Update, update_fps_display)
+           .add_systems(Update, handle_debug_ui_toggle);
     }
 }
 
 // Mark the FPS text for updating
 #[derive(Component)]
 struct FpsText;
+
+// Simple Debug UI State
+#[derive(Resource, Default)]
+struct DebugUiState {
+    visible: bool,
+    settings_text: String,
+}
 
 // Constants
 const GRAVITY: Vec2 = Vec2::new(0.0, -9.81);
@@ -104,6 +113,10 @@ impl Default for SpatialHashResource {
     }
 }
 
+// Marker for settings text
+#[derive(Component)]
+struct SettingsText;
+
 // Systems
 fn setup_simulation(mut commands: Commands) {
     // Set up UI
@@ -128,6 +141,21 @@ fn setup_simulation(mut commands: Commands) {
         },
         FpsText,
     ));
+    
+    // Debug settings text (initially hidden)
+    commands.spawn((
+        Text::new(""),
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(10.0),
+            top: Val::Px(10.0),
+            padding: UiRect::all(Val::Px(10.0)),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+        SettingsText,
+    ));
 }
 
 fn handle_input(
@@ -136,6 +164,8 @@ fn handle_input(
     windows: Query<&Window>,
     mut mouse_interaction: ResMut<MouseInteraction>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
+    mut fluid_params: ResMut<FluidParams>,
+    mut debug_ui_state: ResMut<DebugUiState>,
 ) {
     // Handle mouse interaction
     if let Some(window) = windows.iter().next() {
@@ -158,6 +188,108 @@ fn handle_input(
         mouse_interaction.strength = 2000.0;
     } else if keys.just_pressed(KeyCode::Digit3) {
         mouse_interaction.strength = 3000.0;
+    }
+    
+    // Parameter adjustment keys - only when debug UI is visible
+    if debug_ui_state.visible {
+        // Smoothing radius
+        if keys.pressed(KeyCode::KeyQ) {
+            fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
+        }
+        if keys.pressed(KeyCode::KeyA) {
+            fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
+        }
+        
+        // Pressure multiplier
+        if keys.pressed(KeyCode::KeyW) {
+            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
+        }
+        if keys.pressed(KeyCode::KeyS) {
+            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
+        }
+        
+        // Surface tension
+        if keys.pressed(KeyCode::KeyE) {
+            fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier + 1.0).min(100.0);
+        }
+        if keys.pressed(KeyCode::KeyD) {
+            fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier - 1.0).max(5.0);
+        }
+        
+        // Viscosity
+        if keys.pressed(KeyCode::KeyR) {
+            fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
+        }
+        if keys.pressed(KeyCode::KeyF) {
+            fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
+        }
+        
+        // Reset to defaults
+        if keys.just_pressed(KeyCode::KeyX) {
+            *fluid_params = FluidParams::default();
+            *mouse_interaction = MouseInteraction::default();
+        }
+    }
+    
+    // Update settings text content
+    update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction);
+}
+
+// Helper function to update settings text
+fn update_settings_text(
+    debug_ui_state: &mut DebugUiState, 
+    fluid_params: &FluidParams,
+    mouse_interaction: &MouseInteraction
+) {
+    debug_ui_state.settings_text = format!(
+        "Simulation Parameters (F1 to hide)\n\n\
+        [Q/A] Smoothing Radius: {:.1}\n\
+        [W/S] Pressure Multiplier: {:.1}\n\
+        [E/D] Surface Tension: {:.1}\n\
+        [R/F] Viscosity: {:.3}\n\n\
+        Target Density: {:.1}\n\
+        Mouse Force: {:.1}\n\
+        Mouse Radius: {:.1}\n\n\
+        [X] Reset to Defaults",
+        fluid_params.smoothing_radius,
+        fluid_params.pressure_multiplier,
+        fluid_params.near_pressure_multiplier,
+        fluid_params.viscosity_strength,
+        fluid_params.target_density,
+        mouse_interaction.strength,
+        mouse_interaction.radius
+    );
+}
+
+// Toggle debug UI visibility
+fn handle_debug_ui_toggle(
+    mut debug_ui_state: ResMut<DebugUiState>,
+    mut query: Query<(&mut Node, &mut Text), With<SettingsText>>,
+    buttons: Res<ButtonInput<KeyCode>>,
+    fluid_params: Res<FluidParams>,
+    mouse_interaction: Res<MouseInteraction>,
+) {
+    if buttons.just_pressed(KeyCode::F1) {
+        debug_ui_state.visible = !debug_ui_state.visible;
+        
+        if let Ok((mut node, mut text)) = query.get_single_mut() {
+            node.display = if debug_ui_state.visible {
+                Display::Flex
+            } else {
+                Display::None
+            };
+            
+            if debug_ui_state.visible {
+                // Update parameters display when showing
+                update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction);
+                *text = Text::new(debug_ui_state.settings_text.clone());
+            }
+        }
+    } else if debug_ui_state.visible {
+        // Update text content even when not toggling visibility
+        if let Ok((_, mut text)) = query.get_single_mut() {
+            *text = Text::new(debug_ui_state.settings_text.clone());
+        }
     }
 }
 
