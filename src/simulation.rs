@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, DiagnosticsStore};
 use crate::math::FluidMath;
 use crate::spatial_hash::SpatialHash;
 
@@ -18,9 +19,14 @@ impl Plugin for SimulationPlugin {
            .add_systems(Update, calculate_viscosity)
            .add_systems(Update, update_positions)
            .add_systems(Update, handle_collisions)
-           .add_systems(Update, update_sprite_colors);
+           .add_systems(Update, update_sprite_colors)
+           .add_systems(Update, update_fps_display);
     }
 }
+
+// Mark the FPS text for updating
+#[derive(Component)]
+struct FpsText;
 
 // Constants
 const GRAVITY: Vec2 = Vec2::new(0.0, -9.81);
@@ -39,7 +45,7 @@ pub struct Particle {
 }
 
 // Resources
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub struct FluidParams {
     pub smoothing_radius: f32,
     pub target_density: f32,
@@ -64,13 +70,13 @@ impl Default for FluidParams {
     }
 }
 
-#[derive(Resource)]
-struct MouseInteraction {
-    position: Vec2,
-    active: bool,
-    repel: bool,
-    strength: f32,
-    radius: f32,
+#[derive(Resource, Clone)]
+pub struct MouseInteraction {
+    pub position: Vec2,
+    pub active: bool,
+    pub repel: bool,
+    pub strength: f32,
+    pub radius: f32,
 }
 
 impl Default for MouseInteraction {
@@ -120,6 +126,7 @@ fn setup_simulation(mut commands: Commands) {
             left: Val::Px(10.0),
             ..default()
         },
+        FpsText,
     ));
 }
 
@@ -393,5 +400,19 @@ fn update_sprite_colors(
         
         // Update sprite color
         sprite.color = color;
+    }
+}
+
+// System to update the FPS display
+fn update_fps_display(
+    diagnostics: Res<DiagnosticsStore>,
+    mut query: Query<&mut Text, With<FpsText>>,
+) {
+    if let Ok(mut text) = query.single_mut() {
+        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
+            if let Some(value) = fps.smoothed() {
+                *text = Text::new(format!("FPS: {:.1}", value));
+            }
+        }
     }
 } 
