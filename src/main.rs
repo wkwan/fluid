@@ -4,6 +4,8 @@ use bevy::sprite::{Wireframe2dConfig, Wireframe2dPlugin};
 use bevy::pbr::wireframe::Wireframe;
 use bevy::render::mesh::Indices;
 use bevy::render::render_resource::PrimitiveTopology;
+use std::f32::consts::PI;
+use rand::prelude::*;
 
 fn main() {
     let mut app = App::new();
@@ -20,6 +22,8 @@ fn main() {
 const GRAVITY: f32 = 300.0;
 const BOX_SIZE: Vec2 = Vec2::new(800.0, 600.0);
 const COLLISION_DAMPING: f32 = 0.8;
+const PARTICLE_SIZE: f32 = 10.0;
+const PARTICLE_MASS: f32 = 1.0;
 
 #[derive(Component)]
 struct Particle {
@@ -55,18 +59,25 @@ fn setup(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    commands.spawn((
-        Mesh2d(meshes.add(Circle::new(10.0))),
-        MeshMaterial2d(materials.add(Color::hsl(223., 0.95, 0.7))),
-        Transform::from_xyz(
-            0.0,
-            0.0,
-            0.0,
-        ),
-        Particle {
-            velocity: Vec2::new(0.0, 0.0),
-        }
-    ));
+    // Spawn 1000 random particles
+    let mut rng = rand::rng();
+    let particle_count = 1000;
+    
+    for _ in 0..particle_count {
+        let pos = Vec2::new(
+            rng.gen_range(-half_size.x + PARTICLE_SIZE..half_size.x - PARTICLE_SIZE),
+            rng.gen_range(-half_size.y + PARTICLE_SIZE..half_size.y - PARTICLE_SIZE)
+        );
+        
+        commands.spawn((
+            Mesh2d(meshes.add(Circle::new(PARTICLE_SIZE))),
+            MeshMaterial2d(materials.add(Color::hsl(223., 0.95, 0.7))),
+            Transform::from_xyz(pos.x, pos.y, 0.0),
+            Particle {
+                velocity: Vec2::new(0.0, 0.0),
+            }
+        ));
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     commands.spawn((
@@ -78,6 +89,23 @@ fn setup(
             ..default()
         },
     ));
+}
+
+fn smoothing_kernel(radius: f32, dist: f32) -> f32 {
+    let volume = PI * radius.powi(8) / 4.0;
+    let value = f32::max(0.0, radius * radius - dist * dist);
+    value * value * value / volume
+}
+
+fn calculate_density(sample_point: Vec2, mut particles: Query<(&mut Particle, &mut Transform)>) -> f32 {
+    let mut density = 0.0;
+
+    for (particle, transform) in &particles {
+        let dist = (sample_point - transform.translation.xy()).length();
+        let influence = smoothing_kernel(PARTICLE_SIZE, dist);
+        density += PARTICLE_MASS * influence;
+    }
+    density
 }
 
 fn update_particles(time: Res<Time>, mut particles: Query<(&mut Particle, &mut Transform)>) {
