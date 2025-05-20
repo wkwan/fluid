@@ -29,7 +29,7 @@ impl Default for SpawnRegions {
                 size: Vec2::new(300.0, 200.0),
                 debug_color: Color::srgb(0.0, 0.0, 1.0),
             }],
-            spawn_density: 0.8,
+            spawn_density: 2.0,
             initial_velocity: Vec2::new(0.0, -50.0),
             jitter_strength: 10.0,
         }
