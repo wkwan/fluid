@@ -87,9 +87,14 @@ pub struct GpuPerformanceStats {
     pub frame_times: Vec<f32>,
     pub avg_frame_time: f32,
     pub max_sample_count: usize,
-    pub max_timestep_fps: f32,  // Added for adaptive timestep
-    pub iterations_per_frame: u32,  // Added for multi-iteration physics
-    pub time_scale: f32,  // Added missing field
+    pub max_timestep_fps: f32,
+    pub iterations_per_frame: u32,
+    pub time_scale: f32,
+    pub max_velocity: f32,
+    pub adaptive_timestep: bool,
+    pub adaptive_iterations: bool,
+    pub base_iterations: u32,
+    pub velocity_iteration_scale: f32,
 }
 
 impl Default for GpuPerformanceStats {
@@ -98,9 +103,14 @@ impl Default for GpuPerformanceStats {
             frame_times: Vec::with_capacity(100),
             avg_frame_time: 0.0,
             max_sample_count: 100,
-            max_timestep_fps: 60.0,  // Default to 60 FPS cap
-            iterations_per_frame: 3,  // Default to 3 iterations per frame
-            time_scale: 1.0,  // Default time scale
+            max_timestep_fps: 60.0,
+            iterations_per_frame: 3,
+            time_scale: 1.0,
+            max_velocity: 0.0,
+            adaptive_timestep: true,
+            adaptive_iterations: true,
+            base_iterations: 3,
+            velocity_iteration_scale: 1.0,
         }
     }
 }
@@ -198,6 +208,7 @@ fn update_gpu_performance(
     time: Res<Time>,
     gpu_state: Res<GpuState>,
     mut perf_stats: ResMut<GpuPerformanceStats>,
+    particles: Query<&Particle>,
 ) {
     if !gpu_state.enabled {
         perf_stats.frame_times.clear();
@@ -216,11 +227,37 @@ fn update_gpu_performance(
     let sum: f32 = perf_stats.frame_times.iter().sum();
     perf_stats.avg_frame_time = sum / perf_stats.frame_times.len() as f32;
     
-    // Adjust iterations based on performance
-    if perf_stats.avg_frame_time > 16.67 { // Below 60 FPS
-        perf_stats.iterations_per_frame = 2;
+    // Find maximum particle velocity for adaptive iterations
+    let mut max_velocity = 0.0;
+    for particle in particles.iter() {
+        let velocity_magnitude = particle.velocity.length();
+        if velocity_magnitude > max_velocity {
+            max_velocity = velocity_magnitude;
+        }
+    }
+    perf_stats.max_velocity = max_velocity;
+    
+    // Adjust iterations based on performance and velocity
+    if perf_stats.adaptive_iterations {
+        // Scale iterations based on performance
+        let base_iterations = if perf_stats.avg_frame_time > 16.67 { // Below 60 FPS
+            perf_stats.base_iterations.min(2) // Cap at 2 if performance is low
+        } else {
+            perf_stats.base_iterations
+        };
+        
+        // Scale iterations based on maximum velocity
+        // Higher velocities need more iterations for stability
+        let velocity_scale = if max_velocity > 0.0 {
+            let normalized_velocity = (max_velocity / 500.0).clamp(1.0, 4.0);
+            perf_stats.velocity_iteration_scale * normalized_velocity
+        } else {
+            1.0
+        };
+        
+        perf_stats.iterations_per_frame = (base_iterations as f32 * velocity_scale).max(1.0) as u32;
     } else {
-        perf_stats.iterations_per_frame = 3;
+        perf_stats.iterations_per_frame = perf_stats.base_iterations;
     }
 }
 
@@ -556,113 +593,232 @@ fn prepare_bind_groups(
     bind_group.pipeline_ready = all_pipelines_ready;
 }
 
-// Setup buffers and bind groups for GPU computation
+// Queue particle buffers for GPU computation with optimized workgroups
 fn queue_particle_buffers(
     fluid_bind_group: ResMut<FluidBindGroup>,
-    fluid_pipeline: ResMut<FluidPipeline>,
+    mut fluid_pipeline: ResMut<FluidPipeline>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     extracted_params: Option<Res<ExtractedFluidParams>>,
-    _pipeline_cache: Res<PipelineCache>,
-    _gpu_state: ResMut<RenderGpuState>,
+    pipeline_cache: Res<PipelineCache>,
+    mut gpu_state: ResMut<RenderGpuState>,
     perf_stats: Res<GpuPerformanceStats>,
 ) {
-    if let Some(params) = extracted_params {
-        // Skip if bind group isn't ready
-        if fluid_bind_group.bind_group.is_none() {
+    if !gpu_state.enabled {
+        return;
+    }
+
+    // Check if we have extracted data
+    let Some(extracted_params) = extracted_params else {
+        return;
+    };
+
+    // Get number of particles
+    let num_particles = extracted_params.num_particles;
+    if num_particles == 0 {
+        return;
+    }
+
+    // Check if pipelines are ready
+    if !fluid_bind_group.pipeline_ready {
+        // First check if pipelines are ready in cache
+        let spatial_hash_pipeline = fluid_pipeline.spatial_hash_id
+            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+        let calculate_offsets_pipeline = fluid_pipeline.calculate_offsets_id
+            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+        let reorder_pipeline = fluid_pipeline.reorder_id
+            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+        let reorder_copyback_pipeline = fluid_pipeline.reorder_copyback_id
+            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+        let density_pressure_pipeline = fluid_pipeline.density_pressure_id
+            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+        let forces_pipeline = fluid_pipeline.forces_id
+            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+        let integration_pipeline = fluid_pipeline.integration_id
+            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
+
+        if let (
+            Some(spatial_hash_pipeline),
+            Some(calculate_offsets_pipeline),
+            Some(reorder_pipeline),
+            Some(reorder_copyback_pipeline),
+            Some(density_pressure_pipeline),
+            Some(forces_pipeline),
+            Some(integration_pipeline),
+        ) = (
+            spatial_hash_pipeline,
+            calculate_offsets_pipeline,
+            reorder_pipeline,
+            reorder_copyback_pipeline,
+            density_pressure_pipeline,
+            forces_pipeline,
+            integration_pipeline,
+        ) {
+            // Set pipelines from cache
+            fluid_pipeline.spatial_hash_pipeline = Some(spatial_hash_pipeline.clone());
+            fluid_pipeline.calculate_offsets_pipeline = Some(calculate_offsets_pipeline.clone());
+            fluid_pipeline.reorder_pipeline = Some(reorder_pipeline.clone());
+            fluid_pipeline.reorder_copyback_pipeline = Some(reorder_copyback_pipeline.clone());
+            fluid_pipeline.density_pressure_pipeline = Some(density_pressure_pipeline.clone());
+            fluid_pipeline.forces_pipeline = Some(forces_pipeline.clone());
+            fluid_pipeline.integration_pipeline = Some(integration_pipeline.clone());
+        } else {
+            // Pipelines not ready yet
             return;
         }
-        
-        // Calculate adaptive timestep
-        let max_delta_time = if perf_stats.max_timestep_fps > 0.0 {
-            1.0 / perf_stats.max_timestep_fps
-        } else {
-            f32::INFINITY
-        };
-        let dt = (params.dt * perf_stats.time_scale).min(max_delta_time);
-        let sub_step_dt = dt / perf_stats.iterations_per_frame as f32;
+    }
 
-        // Use optimal workgroup size for RTX 4090 (128 instead of 256)
-        // RTX 4090 has 128 CUDA cores per SM, so this aligns better
-        let workgroup_size = 128u32;
-        let dispatch_size = (params.num_particles as u32 + workgroup_size - 1) / workgroup_size;
-        
-        // Create command encoder
-        let mut encoder = render_device.create_command_encoder(&Default::default());
+    // Prepare parameters for shader
+    let fluid_params = &extracted_params.params;
+    let mouse = &extracted_params.mouse;
+    
+    // Calculate optimal timestep based on iterations 
+    let dt = extracted_params.dt;
+    let sub_step_dt = dt / perf_stats.iterations_per_frame as f32;
+    
+    // Prepare GPU fluid params
+    let gpu_params = GpuFluidParams {
+        smoothing_radius: fluid_params.smoothing_radius,
+        target_density: fluid_params.target_density,
+        pressure_multiplier: fluid_params.pressure_multiplier,
+        near_pressure_multiplier: fluid_params.near_pressure_multiplier,
+        viscosity_strength: fluid_params.viscosity_strength,
+        boundary_dampening: 0.3, // Use constant as this field doesn't exist in FluidParams
+        particle_radius: 5.0, // Hard-coded for now
+        dt: sub_step_dt,
+        boundary_min: [fluid_params.boundary_min.x, fluid_params.boundary_min.y],
+        boundary_min_padding: [0.0, 0.0],
+        boundary_max: [fluid_params.boundary_max.x, fluid_params.boundary_max.y],
+        boundary_max_padding: [0.0, 0.0],
+        gravity: [0.0, -9.81], // Hard-coded gravity value for now
+        gravity_padding: [0.0, 0.0],
+        mouse_position: [mouse.position.x, mouse.position.y],
+        mouse_radius: mouse.radius,
+        mouse_strength: mouse.strength,
+        mouse_active: if mouse.active { 1 } else { 0 },
+        mouse_repel: if mouse.repel { 1 } else { 0 },
+        padding: [0, 0],
+    };
 
-        // Create a single compute pass to reduce overhead
-        if let (Some(bind_group),
-                Some(spatial_hash_pipeline)) = (
-            &fluid_bind_group.bind_group,
-            &fluid_pipeline.spatial_hash_pipeline,
-        ) {
-            // Spatial hash pass
+    // Write parameters to buffer
+    if let Some(params_buffer) = &fluid_bind_group.params_buffer {
+        render_queue.write_buffer(params_buffer, 0, bytemuck::cast_slice(&[gpu_params]));
+    }
+
+    // Calculate optimal workgroup count for RTX 4090
+    let workgroup_size = 128; // RTX 4090 optimal workgroup size
+    let num_workgroups = (num_particles as u32 + workgroup_size - 1) / workgroup_size;
+
+    // Use empty compute pass descriptor
+    let compute_pass_descriptor = bevy::render::render_resource::ComputePassDescriptor {
+        label: None,
+        timestamp_writes: None,
+    };
+
+    if let (
+        Some(spatial_hash_pipeline),
+        Some(calculate_offsets_pipeline),
+        Some(reorder_pipeline),
+        Some(reorder_copyback_pipeline),
+        Some(density_pressure_pipeline),
+        Some(forces_pipeline),
+        Some(integration_pipeline),
+        Some(bind_group),
+    ) = (
+        &fluid_pipeline.spatial_hash_pipeline,
+        &fluid_pipeline.calculate_offsets_pipeline,
+        &fluid_pipeline.reorder_pipeline,
+        &fluid_pipeline.reorder_copyback_pipeline,
+        &fluid_pipeline.density_pressure_pipeline,
+        &fluid_pipeline.forces_pipeline,
+        &fluid_pipeline.integration_pipeline,
+        &fluid_bind_group.bind_group,
+    ) {
+        // Get number of iterations to perform
+        let iterations = perf_stats.iterations_per_frame as usize;
+        
+        // Process physics multiple times per frame for better stability
+        for _ in 0..iterations {
+            // Create a new command encoder for each iteration
+            let mut command_encoder = render_device.create_command_encoder(&bevy::render::render_resource::CommandEncoderDescriptor {
+                label: Some("fluid_simulation_pass_1"),
+            });
+            
             {
-                let mut pass = encoder.begin_compute_pass(&Default::default());
+                // 1. Spatial hash pass
+                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
                 pass.set_pipeline(spatial_hash_pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(dispatch_size, 1, 1);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
             }
-            
-            // Submit immediately to avoid GPU stalls
-            render_queue.submit(std::iter::once(encoder.finish()));
-        }
-        
-        // Create new encoder for next phase
-        let mut encoder = render_device.create_command_encoder(&Default::default());
-        
-        // Density and pressure + forces in sequential passes
-        if let (Some(bind_group),
-                Some(density_pipeline),
-                Some(forces_pipeline)) = (
-            &fluid_bind_group.bind_group,
-            &fluid_pipeline.density_pressure_pipeline,
-            &fluid_pipeline.forces_pipeline,
-        ) {
-            // Density pass
+
             {
-                let mut pass = encoder.begin_compute_pass(&Default::default());
-                pass.set_pipeline(density_pipeline);
+                // 2. Calculate offsets pass
+                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
+                pass.set_pipeline(calculate_offsets_pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(dispatch_size, 1, 1);
+                // This needs to consider all keys so it stays with full dispatch size
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
             }
-            
-            // Submit immediately
-            render_queue.submit(std::iter::once(encoder.finish()));
-            
-            // Create new encoder for forces
-            let mut encoder = render_device.create_command_encoder(&Default::default());
-            
-            // Forces pass
+
             {
-                let mut pass = encoder.begin_compute_pass(&Default::default());
+                // 3. Reorder pass
+                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
+                pass.set_pipeline(reorder_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
+            }
+
+            {
+                // 4. Reorder copy back pass
+                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
+                pass.set_pipeline(reorder_copyback_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
+            }
+
+            // Submit this set of operations and create a new encoder for the next phase
+            render_queue.submit(std::iter::once(command_encoder.finish()));
+            let mut command_encoder = render_device.create_command_encoder(&bevy::render::render_resource::CommandEncoderDescriptor {
+                label: Some("fluid_simulation_pass_2"),
+            });
+
+            {
+                // 5. Density and pressure calculation
+                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
+                pass.set_pipeline(density_pressure_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
+            }
+
+            // Submit and create new encoder for next phase
+            render_queue.submit(std::iter::once(command_encoder.finish()));
+            let mut command_encoder = render_device.create_command_encoder(&bevy::render::render_resource::CommandEncoderDescriptor {
+                label: Some("fluid_simulation_pass_3"),
+            });
+
+            {
+                // 6. Force calculation
+                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
                 pass.set_pipeline(forces_pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(dispatch_size, 1, 1);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
             }
-            
-            // Submit immediately
-            render_queue.submit(std::iter::once(encoder.finish()));
-        }
-        
-        // Create new encoder for integration
-        let mut encoder = render_device.create_command_encoder(&Default::default());
-        
-        // Integration pass (update positions)
-        if let (Some(bind_group),
-                Some(integration_pipeline)) = (
-            &fluid_bind_group.bind_group,
-            &fluid_pipeline.integration_pipeline,
-        ) {
+
             {
-                let mut pass = encoder.begin_compute_pass(&Default::default());
+                // 7. Final integration and collision
+                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
                 pass.set_pipeline(integration_pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(dispatch_size, 1, 1);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
             }
-            
-            // Final submit
-            render_queue.submit(std::iter::once(encoder.finish()));
+
+            // Submit final encoder for this iteration
+            render_queue.submit(std::iter::once(command_encoder.finish()));
         }
+    } else {
+        // Error - this shouldn't happen
+        gpu_state.error_count += 1;
+        gpu_state.last_error = Some("Failed to get compute pipelines or bind group.".to_string());
     }
 } 

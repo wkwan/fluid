@@ -65,6 +65,15 @@ const OFFSETS_2D: array<vec2<i32>, 9> = array<vec2<i32>, 9>(
 const HASH_K1: u32 = 15823u;
 const HASH_K2: u32 = 9737333u;
 
+// Shared memory for RTX 4090 optimization
+// Each workgroup will cache particle data for faster access
+struct CachedParticle {
+    position: vec2<f32>,
+    key: u32,
+}
+
+var<workgroup> shared_particles: array<CachedParticle, 128>;
+
 @group(0) @binding(0)
 var<storage, read_write> particles: array<Particle>;
 
@@ -80,61 +89,88 @@ var<storage, read_write> spatial_indices: array<u32>;
 @group(0) @binding(4)
 var<storage, read_write> spatial_offsets: array<u32>;
 
-// SPH kernel functions
+// Calculate optimal cell size based on particle radius
+fn calculate_optimal_cell_size(particle_radius: f32, smoothing_radius: f32) -> f32 {
+    return max(smoothing_radius, particle_radius * 4.0);
+}
+
+// SPH kernel functions with optimized math
 fn poly6(dist_squared: f32, h_squared: f32) -> f32 {
     if (dist_squared >= h_squared) {
         return 0.0;
     }
+    
+    // Precompute constants for better performance
+    let factor = h_squared - dist_squared;
+    let factor_squared = factor * factor;
+    
+    // Use approximate math where possible for RTX 4090
     let h9 = h_squared * h_squared * h_squared * h_squared * h_squared;
     let kernel_const = 315.0 / (64.0 * 3.14159265 * sqrt(h9));
-    let kernel = kernel_const * pow(h_squared - dist_squared, 3.0);
-    return kernel;
+    
+    return kernel_const * factor * factor_squared;
 }
 
 fn spiky_pow2(dist: f32, h: f32) -> f32 {
     if (dist >= h) {
         return 0.0;
     }
+    
+    let factor = h - dist;
     let h6 = h * h * h * h * h * h;
     let kernel_const = 15.0 / (3.14159265 * h6);
-    let kernel = kernel_const * pow(h - dist, 2.0);
-    return kernel;
+    
+    return kernel_const * factor * factor;
 }
 
 // Convert floating point position into an integer cell coordinate
-fn get_cell_2d(position: vec2<f32>, radius: f32) -> vec2<i32> {
-    return vec2<i32>(floor(position / radius));
+fn get_cell_2d(position: vec2<f32>, cell_size: f32) -> vec2<i32> {
+    return vec2<i32>(floor(position / cell_size));
 }
 
 // Hash cell coordinate to a single unsigned integer
 fn hash_cell_2d(cell: vec2<i32>) -> u32 {
     let x = u32(cell.x);
     let y = u32(cell.y);
-    return x * HASH_K1 + y * HASH_K2;
+    return ((x * HASH_K1) ^ (y * HASH_K2)) + (x * y);
 }
 
 // Get key from hash for a table of given size
 fn key_from_hash(hash: u32, table_size: u32) -> u32 {
-    return hash % table_size;
+    let mixed = hash ^ (hash >> 16);
+    return mixed % table_size;
 }
 
 // Using spatial hashing for efficient neighbor finding
-@compute @workgroup_size(256, 1, 1)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+// RTX 4090 optimized workgroup size
+@compute @workgroup_size(128, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_id) local_id: vec3<u32>) {
     let index = global_id.x;
+    let local_index = local_id.x;
+    
     if (index >= arrayLength(&particles)) {
         return;
     }
     
+    // Cache this particle's data in shared memory
+    if (local_index < 128u) {
+        shared_particles[local_index].position = particles[index].position;
+        shared_particles[local_index].key = spatial_keys[index];
+    }
+    
+    // Ensure all threads have cached their data
+    workgroupBarrier();
+    
     let h = params.smoothing_radius;
     let h_squared = h * h;
+    let optimal_cell_size = calculate_optimal_cell_size(params.particle_radius, h);
     
     // Self-contribution
     var density = poly6(0.0, h_squared);
     var near_density = 0.0;
     
-    let position = particles[index].position;
-    let origin_cell = get_cell_2d(position, h);
+    let position = shared_particles[local_index].position;
+    let origin_cell = get_cell_2d(position, optimal_cell_size);
     
     // Calculate density using spatial hash for neighbor finding
     for (var i = 0u; i < 9u; i = i + 1u) {
@@ -145,13 +181,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Get the starting index for this key
         var curr_index = spatial_offsets[key];
         
+        // Skip empty cells early
+        if (curr_index == 0xFFFFFFFFu) {
+            continue;
+        }
+        
         // Iterate through all particles in this cell
         while (curr_index < arrayLength(&particles)) {
-            if (curr_index == 0xFFFFFFFFu) {
-                // Cell is empty (sentinel value)
-                break;
-            }
-            
             // Check if we're still in the same cell
             if (key != spatial_keys[curr_index]) {
                 break;
@@ -181,9 +217,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
     
-    // Calculate pressure from density
-    let density_error = density - params.target_density;
-    let pressure = density_error * params.pressure_multiplier;
+    // Calculate pressure from density with improved stability
+    let target_density = max(params.target_density, 0.1); // Prevent division by zero
+    let density_error = density - target_density;
+    
+    // Use non-linear pressure model for better stability at high densities
+    var pressure = density_error * params.pressure_multiplier;
+    
+    // Enforce minimum pressure for stability (prevents clustering)
+    if (density > target_density * 1.5) {
+        pressure *= 1.5; // Extra pressure for high density regions
+    }
+    
     let near_pressure = near_density * params.near_pressure_multiplier;
     
     // Update the particle density and pressure

@@ -64,6 +64,9 @@ const OFFSETS_2D: array<vec2<i32>, 9> = array<vec2<i32>, 9>(
 const HASH_K1: u32 = 15823u;
 const HASH_K2: u32 = 9737333u;
 
+// Workgroup shared memory for better locality
+var<workgroup> shared_positions: array<vec2<f32>, 128>;
+
 // Spatial hash buffers
 @group(0) @binding(0)
 var<storage, read_write> particles: array<Particle>;
@@ -80,33 +83,61 @@ var<storage, read_write> spatial_indices: array<u32>;
 @group(0) @binding(4)
 var<storage, read_write> spatial_offsets: array<u32>;
 
-// Convert floating point position into an integer cell coordinate
-fn get_cell_2d(position: vec2<f32>, radius: f32) -> vec2<i32> {
-    return vec2<i32>(floor(position / radius));
+// Calculate optimal cell size based on particle radius
+fn calculate_optimal_cell_size(particle_radius: f32, smoothing_radius: f32) -> f32 {
+    // For better performance, cell size should be related to smoothing radius
+    // but not too small to prevent excessive hash collisions
+    return max(smoothing_radius, particle_radius * 4.0);
 }
 
-// Hash cell coordinate to a single unsigned integer
+// Convert floating point position into an integer cell coordinate
+fn get_cell_2d(position: vec2<f32>, cell_size: f32) -> vec2<i32> {
+    return vec2<i32>(floor(position / cell_size));
+}
+
+// Hash cell coordinate to a single unsigned integer using prime multipliers
+// This improves distribution and reduces collisions
 fn hash_cell_2d(cell: vec2<i32>) -> u32 {
     let x = u32(cell.x);
     let y = u32(cell.y);
-    return x * HASH_K1 + y * HASH_K2;
+    return ((x * HASH_K1) ^ (y * HASH_K2)) + (x * y);
 }
 
-// Get key from hash for a table of given size
+// Get key from hash for a table of given size with better distribution
 fn key_from_hash(hash: u32, table_size: u32) -> u32 {
-    return hash % table_size;
+    // FNV-1a-inspired mixing for better hash distribution
+    let mixed = hash ^ (hash >> 16);
+    return mixed % table_size;
 }
 
 // Compute shader to calculate spatial hash for all particles
-@compute @workgroup_size(256, 1, 1)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+// RTX 4090 optimized workgroup size
+@compute @workgroup_size(128, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_id) local_id: vec3<u32>, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
     let index = global_id.x;
+    let local_index = local_id.x;
+    
+    // Check array bounds to prevent issues
     if (index >= arrayLength(&particles)) {
         return;
     }
     
+    // Cache particle position in shared memory for better performance
+    if (local_index < 128u) {
+        shared_positions[local_index] = particles[index].position;
+    }
+    
+    // Ensure all threads have cached their data
+    workgroupBarrier();
+    
+    // Calculate optimal cell size
+    let cell_size = calculate_optimal_cell_size(params.particle_radius, params.smoothing_radius);
+    
+    // Get position from shared memory
+    let position = shared_positions[local_index];
+    
     // Calculate cell for particle position
-    let cell = get_cell_2d(particles[index].position, params.smoothing_radius);
+    let cell = get_cell_2d(position, cell_size);
     
     // Calculate hash and key
     let hash = hash_cell_2d(cell);

@@ -71,7 +71,8 @@ impl Plugin for SimulationPlugin {
            .add_systems(Update, handle_collisions)
            .add_systems(Update, update_particle_colors)
            .add_systems(Update, update_fps_display)
-           .add_systems(Update, handle_debug_ui_toggle);
+           .add_systems(Update, handle_debug_ui_toggle)
+           .add_systems(Update, track_max_velocity);
     }
 }
 
@@ -216,7 +217,7 @@ fn handle_input(
     mut fluid_params: ResMut<FluidParams>,
     mut debug_ui_state: ResMut<DebugUiState>,
     gpu_state: Res<GpuState>,
-    perf_stats: Res<GpuPerformanceStats>,
+    mut perf_stats: ResMut<GpuPerformanceStats>,
     mut color_params: ResMut<ColorMapParams>,
 ) {
     // Handle mouse interaction
@@ -259,6 +260,19 @@ fn handle_input(
     }
     if keys.pressed(KeyCode::KeyJ) {
         color_params.max_speed = (color_params.max_speed - 5.0).max(color_params.min_speed + 1.0);
+    }
+    
+    // Toggle adaptive iterations with I key
+    if keys.just_pressed(KeyCode::KeyI) {
+        perf_stats.adaptive_iterations = !perf_stats.adaptive_iterations;
+    }
+    
+    // Adjust base iterations with U/O keys
+    if keys.just_pressed(KeyCode::KeyU) {
+        perf_stats.base_iterations = (perf_stats.base_iterations - 1).max(1);
+    }
+    if keys.just_pressed(KeyCode::KeyO) {
+        perf_stats.base_iterations = (perf_stats.base_iterations + 1).min(8);
     }
     
     // Parameter adjustment keys - only when debug UI is visible
@@ -326,6 +340,9 @@ fn update_settings_text(
         Mouse Radius: {:.1}\n\n\
         [G] GPU Acceleration: {}\n\
         Avg Frame Time: {:.2} ms\n\
+        [I] Adaptive Iterations: {}\n\
+        [U/O] Iterations: {}/{}\n\
+        Max Velocity: {:.1}\n\
         \n\
         [C] Color by Velocity: {}\n\
         [M/N] Min Speed: {:.1}\n\
@@ -341,6 +358,10 @@ fn update_settings_text(
         mouse_interaction.radius,
         if gpu_state.enabled { "Enabled" } else { "Disabled (CPU)" },
         perf_stats.avg_frame_time,
+        if perf_stats.adaptive_iterations { "On" } else { "Off" },
+        perf_stats.iterations_per_frame, 
+        perf_stats.base_iterations,
+        perf_stats.max_velocity,
         if color_params.use_velocity_color { "Yes" } else { "No" },
         color_params.min_speed,
         color_params.max_speed,
@@ -640,6 +661,45 @@ fn update_fps_display(
             if let Some(value) = fps.smoothed() {
                 *text = Text::new(format!("FPS: {:.1}", value));
             }
+        }
+    }
+}
+
+// Track maximum velocity for performance optimization
+fn track_max_velocity(
+    mut perf_stats: ResMut<GpuPerformanceStats>,
+    particles: Query<&Particle>,
+) {
+    let mut max_velocity = 0.0;
+    
+    for particle in particles.iter() {
+        let velocity_magnitude = particle.velocity.length();
+        if velocity_magnitude > max_velocity {
+            max_velocity = velocity_magnitude;
+        }
+    }
+    
+    // Update maximum velocity
+    perf_stats.max_velocity = max_velocity;
+    
+    // Adjust iterations based on velocity if adaptive iterations is enabled
+    if perf_stats.adaptive_iterations {
+        // Scale iterations based on maximum velocity
+        // Higher velocities need more iterations for stability
+        let base_iterations = perf_stats.base_iterations;
+        
+        let velocity_scale = if max_velocity > 0.0 {
+            let normalized_velocity = (max_velocity / 500.0).clamp(1.0, 3.0);
+            perf_stats.velocity_iteration_scale * normalized_velocity
+        } else {
+            1.0
+        };
+        
+        // Cap min/max iterations based on performance
+        if perf_stats.avg_frame_time > 20.0 { // < 50 FPS
+            perf_stats.iterations_per_frame = 2; // Force lower iterations for performance
+        } else {
+            perf_stats.iterations_per_frame = (base_iterations as f32 * velocity_scale).max(1.0) as u32;
         }
     }
 } 
