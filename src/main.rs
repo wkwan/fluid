@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
+use bevy::diagnostic::{FrameTimeDiagnosticsPlugin};
 
 mod simulation;
 mod spawner;
@@ -19,7 +19,6 @@ fn main() {
             SpawnerPlugin,
             GpuFluidPlugin,
             FrameTimeDiagnosticsPlugin::default(),
-            LogDiagnosticsPlugin::default(),
         ))
         .add_systems(Startup, setup)
         .run();
