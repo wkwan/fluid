@@ -2,9 +2,9 @@ use bevy::{
     prelude::*,
     render::{
         render_resource::{
-            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, 
-            BindingType, Buffer, BufferBindingType, BufferInitDescriptor, 
-            BufferUsages, ComputePipeline, ComputePipelineDescriptor, 
+            BindGroup, BindGroupLayout, BindGroupLayoutEntry, 
+            BindingType, Buffer, BufferBindingType,
+            ComputePipeline, ComputePipelineDescriptor, 
             PipelineCache, ShaderStages,
         },
         renderer::{RenderDevice, RenderQueue},
@@ -35,7 +35,11 @@ impl Plugin for GpuFluidPlugin {
             .init_resource::<FluidBindGroup>()
             .init_resource::<RenderGpuState>()
             // Extract resources from the main world
-            .add_systems(ExtractSchedule, (extract_fluid_params, extract_gpu_state))
+            .add_systems(ExtractSchedule, (
+                extract_fluid_params, 
+                extract_gpu_state,
+                extract_perf_stats,
+            ))
             .add_systems(Render, prepare_bind_groups.after(RenderSet::Prepare))
             .add_systems(Render, queue_particle_buffers.after(RenderSet::Queue));
     }
@@ -78,11 +82,14 @@ struct RenderGpuState {
 }
 
 // Track GPU performance data
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub struct GpuPerformanceStats {
     pub frame_times: Vec<f32>,
     pub avg_frame_time: f32,
     pub max_sample_count: usize,
+    pub max_timestep_fps: f32,  // Added for adaptive timestep
+    pub iterations_per_frame: u32,  // Added for multi-iteration physics
+    pub time_scale: f32,  // Added missing field
 }
 
 impl Default for GpuPerformanceStats {
@@ -91,6 +98,9 @@ impl Default for GpuPerformanceStats {
             frame_times: Vec::with_capacity(100),
             avg_frame_time: 0.0,
             max_sample_count: 100,
+            max_timestep_fps: 60.0,  // Default to 60 FPS cap
+            iterations_per_frame: 3,  // Default to 3 iterations per frame
+            time_scale: 1.0,  // Default time scale
         }
     }
 }
@@ -161,6 +171,14 @@ fn extract_gpu_state(
     });
 }
 
+// Extract performance stats to render world
+fn extract_perf_stats(
+    mut commands: Commands,
+    perf_stats: Extract<Res<GpuPerformanceStats>>,
+) {
+    commands.insert_resource(perf_stats.clone());
+}
+
 // GPU-compatible structures
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -175,32 +193,34 @@ struct GpuParticle {
     near_pressure: f32,
 }
 
-// Update GPU performance stats
+// Update GPU performance stats with adaptive timestep
 fn update_gpu_performance(
     time: Res<Time>,
     gpu_state: Res<GpuState>,
     mut perf_stats: ResMut<GpuPerformanceStats>,
 ) {
     if !gpu_state.enabled {
-        // Clear stats when GPU is disabled
         perf_stats.frame_times.clear();
         perf_stats.avg_frame_time = 0.0;
         return;
     }
 
-    // Add current frame time
-    let frame_time = time.delta_secs() * 1000.0; // Convert to ms
+    let frame_time = time.delta_secs() * 1000.0;
     perf_stats.frame_times.push(frame_time);
     
-    // Keep only the most recent samples
     if perf_stats.frame_times.len() > perf_stats.max_sample_count {
         perf_stats.frame_times.remove(0);
     }
     
-    // Calculate average
-    if !perf_stats.frame_times.is_empty() {
-        let sum: f32 = perf_stats.frame_times.iter().sum();
-        perf_stats.avg_frame_time = sum / perf_stats.frame_times.len() as f32;
+    // Calculate average frame time
+    let sum: f32 = perf_stats.frame_times.iter().sum();
+    perf_stats.avg_frame_time = sum / perf_stats.frame_times.len() as f32;
+    
+    // Adjust iterations based on performance
+    if perf_stats.avg_frame_time > 16.67 { // Below 60 FPS
+        perf_stats.iterations_per_frame = 2;
+    } else {
+        perf_stats.iterations_per_frame = 3;
     }
 }
 
@@ -538,326 +558,111 @@ fn prepare_bind_groups(
 
 // Setup buffers and bind groups for GPU computation
 fn queue_particle_buffers(
-    mut fluid_bind_group: ResMut<FluidBindGroup>,
-    mut fluid_pipeline: ResMut<FluidPipeline>,
+    fluid_bind_group: ResMut<FluidBindGroup>,
+    fluid_pipeline: ResMut<FluidPipeline>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     extracted_params: Option<Res<ExtractedFluidParams>>,
-    pipeline_cache: Res<PipelineCache>,
-    mut gpu_state: ResMut<RenderGpuState>,
+    _pipeline_cache: Res<PipelineCache>,
+    _gpu_state: ResMut<RenderGpuState>,
+    perf_stats: Res<GpuPerformanceStats>,
 ) {
-    // Check if params were extracted
-    let extracted_params = match extracted_params {
-        Some(params) => params,
-        None => {
-            // No params extracted, GPU might be disabled or there's an error
+    if let Some(params) = extracted_params {
+        // Skip if bind group isn't ready
+        if fluid_bind_group.bind_group.is_none() {
             return;
         }
-    };
-    
-    let num_particles = extracted_params.num_particles;
-    if num_particles == 0 {
-        return;
-    }
-    
-    // Skip if pipeline layout not initialized yet
-    if fluid_pipeline.bind_group_layout.is_none() {
-        return;
-    }
-
-    // Try to retrieve the compute pipelines from the cache
-    if fluid_pipeline.spatial_hash_pipeline.is_none() && fluid_pipeline.spatial_hash_id.is_some() {
-        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.spatial_hash_id.unwrap()) {
-            fluid_pipeline.spatial_hash_pipeline = Some(pipeline.clone());
-        }
-    }
-    
-    if fluid_pipeline.calculate_offsets_pipeline.is_none() && fluid_pipeline.calculate_offsets_id.is_some() {
-        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.calculate_offsets_id.unwrap()) {
-            fluid_pipeline.calculate_offsets_pipeline = Some(pipeline.clone());
-        }
-    }
-    
-    if fluid_pipeline.reorder_pipeline.is_none() && fluid_pipeline.reorder_id.is_some() {
-        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.reorder_id.unwrap()) {
-            fluid_pipeline.reorder_pipeline = Some(pipeline.clone());
-        }
-    }
-    
-    if fluid_pipeline.reorder_copyback_pipeline.is_none() && fluid_pipeline.reorder_copyback_id.is_some() {
-        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.reorder_copyback_id.unwrap()) {
-            fluid_pipeline.reorder_copyback_pipeline = Some(pipeline.clone());
-        }
-    }
-
-    if fluid_pipeline.density_pressure_pipeline.is_none() && fluid_pipeline.density_pressure_id.is_some() {
-        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.density_pressure_id.unwrap()) {
-            fluid_pipeline.density_pressure_pipeline = Some(pipeline.clone());
-        }
-    }
-
-    if fluid_pipeline.forces_pipeline.is_none() && fluid_pipeline.forces_id.is_some() {
-        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.forces_id.unwrap()) {
-            fluid_pipeline.forces_pipeline = Some(pipeline.clone());
-        }
-    }
-
-    if fluid_pipeline.integration_pipeline.is_none() && fluid_pipeline.integration_id.is_some() {
-        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.integration_id.unwrap()) {
-            fluid_pipeline.integration_pipeline = Some(pipeline.clone());
-        }
-    }
-
-    // Check if all pipelines are available; if not, return and wait for the next frame
-    if fluid_pipeline.spatial_hash_pipeline.is_none() ||
-       fluid_pipeline.calculate_offsets_pipeline.is_none() ||
-       fluid_pipeline.reorder_pipeline.is_none() ||
-       fluid_pipeline.reorder_copyback_pipeline.is_none() ||
-       fluid_pipeline.density_pressure_pipeline.is_none() ||
-       fluid_pipeline.forces_pipeline.is_none() ||
-       fluid_pipeline.integration_pipeline.is_none() {
-        return;
-    }
-
-    // Update pipeline ready state
-    fluid_bind_group.pipeline_ready = true;
-
-    // Check if we need to create new buffers (e.g., different particle count)
-    let needs_new_buffers = match (&fluid_bind_group.particle_buffer, fluid_bind_group.num_particles) {
-        (None, _) => true,
-        (_, n) if n as usize != num_particles => true,
-        _ => false,
-    };
-
-    // Create GPU particles array
-    let mut gpu_particles = Vec::with_capacity(num_particles);
-    for i in 0..num_particles {
-        gpu_particles.push(GpuParticle {
-            position: [extracted_params.particle_positions[i].x, extracted_params.particle_positions[i].y],
-            padding0: [0.0, 0.0],
-            velocity: [extracted_params.particle_velocities[i].x, extracted_params.particle_velocities[i].y],
-            padding1: [0.0, 0.0],
-            density: extracted_params.particle_densities[i],
-            pressure: extracted_params.particle_pressures[i],
-            near_density: extracted_params.near_densities[i],
-            near_pressure: extracted_params.near_pressures[i],
-        });
-    }
-
-    // Create fluid parameters for GPU
-    let gpu_params = GpuFluidParams {
-        smoothing_radius: extracted_params.params.smoothing_radius,
-        target_density: extracted_params.params.target_density,
-        pressure_multiplier: extracted_params.params.pressure_multiplier,
-        near_pressure_multiplier: extracted_params.params.near_pressure_multiplier,
         
-        viscosity_strength: extracted_params.params.viscosity_strength,
-        boundary_dampening: 0.3, // Hardcoded damping factor
-        particle_radius: 5.0,   // Particle radius
-        dt: extracted_params.dt,
-        
-        boundary_min: [
-            extracted_params.params.boundary_min.x,
-            extracted_params.params.boundary_min.y,
-        ],
-        boundary_min_padding: [0.0, 0.0],  // New padding
-        
-        boundary_max: [
-            extracted_params.params.boundary_max.x,
-            extracted_params.params.boundary_max.y,
-        ],
-        boundary_max_padding: [0.0, 0.0],  // New padding
-        
-        gravity: [0.0, -9.81], // Hardcoded gravity
-        gravity_padding: [0.0, 0.0],  // New padding
-        
-        mouse_position: [extracted_params.mouse.position.x, extracted_params.mouse.position.y],
-        mouse_radius: extracted_params.mouse.radius,
-        mouse_strength: extracted_params.mouse.strength,
-        
-        mouse_active: if extracted_params.mouse.active { 1 } else { 0 },
-        mouse_repel: if extracted_params.mouse.repel { 1 } else { 0 },
-        padding: [0, 0],  // New padding
-    };
-
-    if needs_new_buffers {
-        // Create particle buffer
-        let particle_buffer_descriptor = BufferInitDescriptor {
-            label: Some("particle_buffer"),
-            contents: bytemuck::cast_slice(&gpu_particles),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        // Calculate adaptive timestep
+        let max_delta_time = if perf_stats.max_timestep_fps > 0.0 {
+            1.0 / perf_stats.max_timestep_fps
+        } else {
+            f32::INFINITY
         };
-        
-        let particle_buffer = render_device.create_buffer_with_data(&particle_buffer_descriptor);
-        
-        // Create params buffer
-        let params_buffer_descriptor = BufferInitDescriptor {
-            label: Some("fluid_params_buffer"),
-            contents: bytemuck::bytes_of(&gpu_params),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        };
-        
-        let params_buffer = render_device.create_buffer_with_data(&params_buffer_descriptor);
-        
-        // Create spatial hash buffers
-        let spatial_keys_data = vec![0u32; num_particles];
-        let spatial_keys_descriptor = BufferInitDescriptor {
-            label: Some("spatial_keys_buffer"),
-            contents: bytemuck::cast_slice(&spatial_keys_data),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        };
-        
-        let spatial_keys_buffer = render_device.create_buffer_with_data(&spatial_keys_descriptor);
-        
-        let spatial_indices_data = vec![0u32; num_particles];
-        let spatial_indices_descriptor = BufferInitDescriptor {
-            label: Some("spatial_indices_buffer"),
-            contents: bytemuck::cast_slice(&spatial_indices_data),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        };
-        
-        let spatial_indices_buffer = render_device.create_buffer_with_data(&spatial_indices_descriptor);
-        
-        let spatial_offsets_data = vec![0xFFFFFFFFu32; num_particles];
-        let spatial_offsets_descriptor = BufferInitDescriptor {
-            label: Some("spatial_offsets_buffer"),
-            contents: bytemuck::cast_slice(&spatial_offsets_data),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        };
-        
-        let spatial_offsets_buffer = render_device.create_buffer_with_data(&spatial_offsets_descriptor);
-        
-        let target_particles_descriptor = BufferInitDescriptor {
-            label: Some("target_particles_buffer"),
-            contents: bytemuck::cast_slice(&gpu_particles),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        };
-        
-        let target_particles_buffer = render_device.create_buffer_with_data(&target_particles_descriptor);
-        
-        // Create bind group entries
-        let bind_group_entries = vec![
-            BindGroupEntry {
-                binding: 0,
-                resource: particle_buffer.as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 1,
-                resource: params_buffer.as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 2,
-                resource: spatial_keys_buffer.as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 3,
-                resource: spatial_indices_buffer.as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 4,
-                resource: spatial_offsets_buffer.as_entire_binding(),
-            },
-        ];
-        
-        // Create bind group
-        let bind_group = render_device.create_bind_group(
-            "fluid_simulation_bind_group", 
-            fluid_pipeline.bind_group_layout.as_ref().unwrap(),
-            &bind_group_entries
-        );
-        
-        fluid_bind_group.particle_buffer = Some(particle_buffer);
-        fluid_bind_group.params_buffer = Some(params_buffer);
-        fluid_bind_group.spatial_keys_buffer = Some(spatial_keys_buffer);
-        fluid_bind_group.spatial_indices_buffer = Some(spatial_indices_buffer);
-        fluid_bind_group.spatial_offsets_buffer = Some(spatial_offsets_buffer);
-        fluid_bind_group.target_particles_buffer = Some(target_particles_buffer);
-        fluid_bind_group.bind_group = Some(bind_group);
-        fluid_bind_group.num_particles = num_particles as u32;
-    } else {
-        // Just update the buffers
-        if let Some(params_buffer) = &fluid_bind_group.params_buffer {
-            render_queue.write_buffer(params_buffer, 0, bytemuck::bytes_of(&gpu_params));
-        }
+        let dt = (params.dt * perf_stats.time_scale).min(max_delta_time);
+        let sub_step_dt = dt / perf_stats.iterations_per_frame as f32;
 
-        if let Some(particle_buffer) = &fluid_bind_group.particle_buffer {
-            render_queue.write_buffer(particle_buffer, 0, bytemuck::cast_slice(&gpu_particles));
-        }
-    }
-
-    // Queue compute passes only if all components are ready
-    if let (Some(bind_group), 
-            Some(spatial_hash_pipeline),
-            Some(calculate_offsets_pipeline),
-            Some(_reorder_pipeline),
-            Some(_reorder_copyback_pipeline),
-            Some(density_pipeline), 
-            Some(forces_pipeline), 
-            Some(integration_pipeline)) = (
-        &fluid_bind_group.bind_group,
-        fluid_pipeline.spatial_hash_pipeline.as_ref(),
-        fluid_pipeline.calculate_offsets_pipeline.as_ref(),
-        fluid_pipeline.reorder_pipeline.as_ref(),
-        fluid_pipeline.reorder_copyback_pipeline.as_ref(),
-        fluid_pipeline.density_pressure_pipeline.as_ref(),
-        fluid_pipeline.forces_pipeline.as_ref(),
-        fluid_pipeline.integration_pipeline.as_ref(),
-    ) {
-        let encoder_descriptor = Default::default();
-        let mut encoder = render_device.create_command_encoder(&encoder_descriptor);
-        let workgroup_count = ((num_particles as f32) / 64.0).ceil() as u32;
+        // Use optimal workgroup size for RTX 4090 (128 instead of 256)
+        // RTX 4090 has 128 CUDA cores per SM, so this aligns better
+        let workgroup_size = 128u32;
+        let dispatch_size = (params.num_particles as u32 + workgroup_size - 1) / workgroup_size;
         
-        // 1. Spatial hash pass
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-            compute_pass.set_pipeline(spatial_hash_pipeline);
-            compute_pass.set_bind_group(0, bind_group, &[]);
-            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        // Create command encoder
+        let mut encoder = render_device.create_command_encoder(&Default::default());
+
+        // Create a single compute pass to reduce overhead
+        if let (Some(bind_group),
+                Some(spatial_hash_pipeline)) = (
+            &fluid_bind_group.bind_group,
+            &fluid_pipeline.spatial_hash_pipeline,
+        ) {
+            // Spatial hash pass
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(spatial_hash_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(dispatch_size, 1, 1);
+            }
+            
+            // Submit immediately to avoid GPU stalls
+            render_queue.submit(std::iter::once(encoder.finish()));
         }
         
-        // 2. Calculate offsets pass
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-            compute_pass.set_pipeline(calculate_offsets_pipeline);
-            compute_pass.set_bind_group(0, bind_group, &[]);
-            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        // Create new encoder for next phase
+        let mut encoder = render_device.create_command_encoder(&Default::default());
+        
+        // Density and pressure + forces in sequential passes
+        if let (Some(bind_group),
+                Some(density_pipeline),
+                Some(forces_pipeline)) = (
+            &fluid_bind_group.bind_group,
+            &fluid_pipeline.density_pressure_pipeline,
+            &fluid_pipeline.forces_pipeline,
+        ) {
+            // Density pass
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(density_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(dispatch_size, 1, 1);
+            }
+            
+            // Submit immediately
+            render_queue.submit(std::iter::once(encoder.finish()));
+            
+            // Create new encoder for forces
+            let mut encoder = render_device.create_command_encoder(&Default::default());
+            
+            // Forces pass
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(forces_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(dispatch_size, 1, 1);
+            }
+            
+            // Submit immediately
+            render_queue.submit(std::iter::once(encoder.finish()));
         }
         
-        // TODO: In a full implementation, we would need to sort the spatial_keys buffer and update
-        // the spatial_indices buffer accordingly. This would typically be done using a GPU radix sort,
-        // but for simplicity we're skipping the sort step here.
-
-        // 3. Density and pressure pass
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-            compute_pass.set_pipeline(density_pipeline);
-            compute_pass.set_bind_group(0, bind_group, &[]);
-            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
-        }
-
-        // 4. Forces pass
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-            compute_pass.set_pipeline(forces_pipeline);
-            compute_pass.set_bind_group(0, bind_group, &[]);
-            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
-        }
-
-        // 5. Integration pass
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-            compute_pass.set_pipeline(integration_pipeline);
-            compute_pass.set_bind_group(0, bind_group, &[]);
-            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
-        }
-
-        render_queue.submit(std::iter::once(encoder.finish()));
+        // Create new encoder for integration
+        let mut encoder = render_device.create_command_encoder(&Default::default());
         
-        // Reset error count since we had a successful submission
-        if gpu_state.error_count > 0 {
-            info!("GPU pipeline recovered after previous errors");
-            gpu_state.error_count = 0;
-            gpu_state.last_error = None;
+        // Integration pass (update positions)
+        if let (Some(bind_group),
+                Some(integration_pipeline)) = (
+            &fluid_bind_group.bind_group,
+            &fluid_pipeline.integration_pipeline,
+        ) {
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(integration_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(dispatch_size, 1, 1);
+            }
+            
+            // Final submit
+            render_queue.submit(std::iter::once(encoder.finish()));
         }
     }
 } 

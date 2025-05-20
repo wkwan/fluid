@@ -4,7 +4,7 @@ The purpose is to experiment with different techniques for fluid simulation and 
 
 To run demo:
 ```
-cargo run
+cargo run --release
 ```
 
 Press F1 to toggle simulation parameters.

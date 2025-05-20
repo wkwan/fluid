@@ -56,7 +56,7 @@ var<storage, read_write> particles: array<Particle>;
 var<uniform> params: FluidParams;
 
 // Copy back reordered particles to main buffer
-@compute @workgroup_size(64, 1, 1)
+@compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = global_id.x;
     if (index >= arrayLength(&particles)) {
