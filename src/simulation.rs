@@ -447,36 +447,53 @@ fn calculate_density(
     let smoothing_radius = fluid_params.smoothing_radius;
     let smoothing_radius_squared = smoothing_radius * smoothing_radius;
     let math = FluidMath::new(smoothing_radius);
+    let target_density = fluid_params.target_density;
+    let pressure_multiplier = fluid_params.pressure_multiplier;
+    let near_pressure_multiplier = fluid_params.near_pressure_multiplier;
 
-    // First pass: collect positions to avoid borrow checker issues
+    // Pre-compute self-contribution once
+    let self_density_contribution = math.poly6(0.0, smoothing_radius_squared);
+    
+    // Cache entity positions to avoid repeated Transform reads
     let positions: Vec<(Entity, Vec2)> = particle_query
         .iter()
         .map(|(entity, transform, _)| (entity, transform.translation.truncate()))
         .collect();
+    
+    // Create a hashmap for fast position lookups
+    let mut position_map = std::collections::HashMap::with_capacity(positions.len());
+    for (entity, position) in &positions {
+        position_map.insert(*entity, *position);
+    }
+    
+    // Use iter_mut() for bevy's built-in optimizations
+    for (entity_a, transform_a, mut particle) in particle_query.iter_mut() {
+        let position_a = transform_a.translation.truncate();
+        let neighbors = spatial_hash.spatial_hash.get_neighbors(position_a, smoothing_radius);
         
-    // Second pass: perform density calculations
-    for (entity_a, position_a) in &positions {
-        let neighbors = spatial_hash.spatial_hash.get_neighbors(*position_a, smoothing_radius);
-        
-        // Initial values
-        let mut density = math.poly6(0.0, smoothing_radius_squared); // Self-contribution
+        // Initial values with self-contribution
+        let mut density = self_density_contribution;
         let mut near_density = 0.0;
         
         // Calculate contributions from neighbors
-        for neighbor_entity in &neighbors {
-            // Find the neighbor's position from our positions list
-            if let Some((_, position_b)) = positions.iter().find(|(e, _)| e == neighbor_entity) {
-                let offset = *position_b - *position_a;
+        for neighbor_entity in neighbors {
+            // Skip self comparison
+            if neighbor_entity == entity_a {
+                continue;
+            }
+            
+            // Get position from our cached map - faster than querying again
+            if let Some(&position_b) = position_map.get(&neighbor_entity) {
+                let offset = position_b - position_a;
                 let distance_squared = offset.length_squared();
                 
                 if distance_squared < smoothing_radius_squared {
-                    let distance = distance_squared.sqrt();
-                    
-                    // Add density contribution
+                    // Fast path for density calculation
                     density += math.poly6(distance_squared, smoothing_radius_squared);
                     
-                    // Near density for surface tension
-                    if distance > 0.0 {
+                    // Near density for surface tension - only needed if distance > 0
+                    if distance_squared > 1e-10 {
+                        let distance = distance_squared.sqrt();
                         near_density += math.spiky_pow2(distance, smoothing_radius);
                     }
                 }
@@ -484,15 +501,13 @@ fn calculate_density(
         }
         
         // Update the particle with calculated densities
-        if let Ok((_, _, mut particle)) = particle_query.get_mut(*entity_a) {
-            particle.density = density;
-            particle.near_density = near_density;
-            
-            // Calculate pressure from density
-            let density_error = density - fluid_params.target_density;
-            particle.pressure = density_error * fluid_params.pressure_multiplier;
-            particle.near_pressure = near_density * fluid_params.near_pressure_multiplier;
-        }
+        particle.density = density;
+        particle.near_density = near_density;
+        
+        // Calculate pressure from density
+        let density_error = density - target_density;
+        particle.pressure = density_error * pressure_multiplier;
+        particle.near_pressure = near_density * near_pressure_multiplier;
     }
 }
 
@@ -506,16 +521,44 @@ fn calculate_pressure_force(
     let smoothing_radius = fluid_params.smoothing_radius;
     let math = FluidMath::new(smoothing_radius);
     
-    let mut pressure_forces: Vec<Vec2> = vec![Vec2::ZERO; particle_query.iter().len()];
+    // Cache positions and pressure values to avoid repeated Transform/Component access
+    let particle_data: Vec<(Entity, Vec2, f32, f32)> = particle_query
+        .iter()
+        .enumerate()
+        .map(|(i, (transform, particle))| 
+            (Entity::from_raw(i as u32), transform.translation.truncate(), particle.pressure, particle.near_pressure))
+        .collect();
+    
+    // Create lookup tables
+    let mut position_map = std::collections::HashMap::with_capacity(particle_data.len());
+    let mut pressure_map = std::collections::HashMap::with_capacity(particle_data.len());
+    
+    for &(entity, position, pressure, near_pressure) in &particle_data {
+        position_map.insert(entity, position);
+        pressure_map.insert(entity, (pressure, near_pressure));
+    }
+    
+    let mut pressure_forces: Vec<Vec2> = vec![Vec2::ZERO; particle_query.iter().count()];
     
     // Calculate pressure forces between all particles
-    for (i, (transform_a, particle_a)) in particle_query.iter().enumerate() {
+    for (i, (transform_a, _)) in particle_query.iter().enumerate() {
         let position_a = transform_a.translation.truncate();
+        let entity_a = Entity::from_raw(i as u32);
         let neighbors = spatial_hash.spatial_hash.get_neighbors(position_a, smoothing_radius);
         
+        // Get pressure values from our lookup table
+        let (pressure_a, near_pressure_a) = *pressure_map.get(&entity_a).unwrap_or(&(0.0, 0.0));
+        
         for neighbor_entity in neighbors {
-            if let Ok((transform_b, particle_b)) = particle_query.get(neighbor_entity) {
-                let position_b = transform_b.translation.truncate();
+            // Skip self
+            if neighbor_entity == entity_a {
+                continue;
+            }
+            
+            // Get neighbor data from our maps - faster than querying
+            if let (Some(&position_b), Some(&(pressure_b, near_pressure_b))) = 
+                (position_map.get(&neighbor_entity), pressure_map.get(&neighbor_entity)) {
+                
                 let offset = position_a - position_b;
                 let distance_squared = offset.length_squared();
                 
@@ -524,8 +567,8 @@ fn calculate_pressure_force(
                     let direction = offset / distance;
                     
                     // Pressure force calculation based on both pressure values
-                    let shared_pressure = (particle_a.pressure + particle_b.pressure) * 0.5;
-                    let shared_near_pressure = (particle_a.near_pressure + particle_b.near_pressure) * 0.5;
+                    let shared_pressure = (pressure_a + pressure_b) * 0.5;
+                    let shared_near_pressure = (near_pressure_a + near_pressure_b) * 0.5;
                     
                     let pressure_force = direction * 
                         (math.spiky_pow3_derivative(distance, smoothing_radius) * shared_pressure +
@@ -554,16 +597,44 @@ fn calculate_viscosity(
     let viscosity_strength = fluid_params.viscosity_strength;
     let math = FluidMath::new(smoothing_radius);
     
-    // Process viscosity (velocity damping)
-    let mut velocity_changes: Vec<Vec2> = vec![Vec2::ZERO; particle_query.iter().len()];
+    // Cache positions and velocities to avoid repeated Transform/Component access
+    let particle_data: Vec<(Entity, Vec2, Vec2)> = particle_query
+        .iter()
+        .enumerate()
+        .map(|(i, (transform, particle))| 
+            (Entity::from_raw(i as u32), transform.translation.truncate(), particle.velocity))
+        .collect();
     
-    for (i, (transform_a, particle_a)) in particle_query.iter().enumerate() {
+    // Create lookup tables
+    let mut position_map = std::collections::HashMap::with_capacity(particle_data.len());
+    let mut velocity_map = std::collections::HashMap::with_capacity(particle_data.len());
+    
+    for &(entity, position, velocity) in &particle_data {
+        position_map.insert(entity, position);
+        velocity_map.insert(entity, velocity);
+    }
+    
+    // Process viscosity (velocity damping)
+    let mut velocity_changes: Vec<Vec2> = vec![Vec2::ZERO; particle_query.iter().count()];
+    
+    for (i, (transform_a, _)) in particle_query.iter().enumerate() {
         let position_a = transform_a.translation.truncate();
+        let entity_a = Entity::from_raw(i as u32);
         let neighbors = spatial_hash.spatial_hash.get_neighbors(position_a, smoothing_radius);
         
+        // Get velocity from our lookup table
+        let velocity_a = *velocity_map.get(&entity_a).unwrap_or(&Vec2::ZERO);
+        
         for neighbor_entity in neighbors {
-            if let Ok((transform_b, particle_b)) = particle_query.get(neighbor_entity) {
-                let position_b = transform_b.translation.truncate();
+            // Skip self
+            if neighbor_entity == entity_a {
+                continue;
+            }
+            
+            // Get neighbor data from our maps - faster than querying
+            if let (Some(&position_b), Some(&velocity_b)) = 
+                (position_map.get(&neighbor_entity), velocity_map.get(&neighbor_entity)) {
+                
                 let offset = position_a - position_b;
                 let distance_squared = offset.length_squared();
                 
@@ -571,7 +642,7 @@ fn calculate_viscosity(
                     let distance = distance_squared.sqrt();
                     
                     // Viscosity is based on the velocity difference
-                    let velocity_diff = particle_b.velocity - particle_a.velocity;
+                    let velocity_diff = velocity_b - velocity_a;
                     let influence = math.spiky_pow3(distance, smoothing_radius) * viscosity_strength;
                     velocity_changes[i] += velocity_diff * influence;
                 }
