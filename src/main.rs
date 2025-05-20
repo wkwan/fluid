@@ -9,6 +9,7 @@ mod gpu_fluid;
 
 use simulation::SimulationPlugin;
 use spawner::SpawnerPlugin;
+use gpu_fluid::GpuFluidPlugin;
 
 fn main() {
     App::new()
@@ -16,6 +17,7 @@ fn main() {
         .add_plugins((
             SimulationPlugin,
             SpawnerPlugin,
+            GpuFluidPlugin,
             FrameTimeDiagnosticsPlugin::default(),
             LogDiagnosticsPlugin::default(),
         ))

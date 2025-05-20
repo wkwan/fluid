@@ -3,12 +3,13 @@
 
 struct Particle {
     position: vec2<f32>,
+    padding0: vec2<f32>,  // Padding for 16-byte alignment
     velocity: vec2<f32>,
+    padding1: vec2<f32>,  // Padding for 16-byte alignment
     density: f32,
     pressure: f32,
     near_density: f32,
     near_pressure: f32,
-    padding: array<f32, 8>,
 }
 
 struct FluidParams {
@@ -24,21 +25,27 @@ struct FluidParams {
     particle_radius: f32,
     dt: f32,
     
-    // Vec4 aligned group 3 and 4
+    // Vec4 aligned group 3
     boundary_min: vec2<f32>,
+    boundary_min_padding: vec2<f32>,
+    
+    // Vec4 aligned group 4
     boundary_max: vec2<f32>,
-    gravity: vec2<f32>,
+    boundary_max_padding: vec2<f32>,
     
     // Vec4 aligned group 5
+    gravity: vec2<f32>,
+    gravity_padding: vec2<f32>,
+    
+    // Vec4 aligned group 6
     mouse_position: vec2<f32>,
     mouse_radius: f32,
     mouse_strength: f32,
     
-    // Vec4 aligned group 6
+    // Vec4 aligned group 7
     mouse_active: u32,
     mouse_repel: u32,
-    padding1: u32,
-    padding2: u32,
+    padding: vec2<u32>,
 }
 
 @group(0) @binding(0)

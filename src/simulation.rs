@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, DiagnosticsStore};
 use crate::math::FluidMath;
 use crate::spatial_hash::SpatialHash;
+use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 
 pub struct SimulationPlugin;
 
@@ -166,6 +167,8 @@ fn handle_input(
     camera_q: Query<(&Camera, &GlobalTransform)>,
     mut fluid_params: ResMut<FluidParams>,
     mut debug_ui_state: ResMut<DebugUiState>,
+    gpu_state: Res<GpuState>,
+    perf_stats: Res<GpuPerformanceStats>,
 ) {
     // Handle mouse interaction
     if let Some(window) = windows.iter().next() {
@@ -232,14 +235,16 @@ fn handle_input(
     }
     
     // Update settings text content
-    update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction);
+    update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction, &gpu_state, &perf_stats);
 }
 
 // Helper function to update settings text
 fn update_settings_text(
     debug_ui_state: &mut DebugUiState, 
     fluid_params: &FluidParams,
-    mouse_interaction: &MouseInteraction
+    mouse_interaction: &MouseInteraction,
+    gpu_state: &GpuState,
+    perf_stats: &GpuPerformanceStats,
 ) {
     debug_ui_state.settings_text = format!(
         "Simulation Parameters (F1 to hide)\n\n\
@@ -250,6 +255,9 @@ fn update_settings_text(
         Target Density: {:.1}\n\
         Mouse Force: {:.1}\n\
         Mouse Radius: {:.1}\n\n\
+        [G] GPU Acceleration: {}\n\
+        Avg Frame Time: {:.2} ms\n\
+        {}\n\n\
         [X] Reset to Defaults",
         fluid_params.smoothing_radius,
         fluid_params.pressure_multiplier,
@@ -257,7 +265,14 @@ fn update_settings_text(
         fluid_params.viscosity_strength,
         fluid_params.target_density,
         mouse_interaction.strength,
-        mouse_interaction.radius
+        mouse_interaction.radius,
+        if gpu_state.enabled { "Enabled" } else { "Disabled (CPU)" },
+        perf_stats.avg_frame_time,
+        if let Some(err) = &gpu_state.last_error {
+            format!("GPU Error: {}", err)
+        } else {
+            String::new()
+        }
     );
 }
 
@@ -268,11 +283,13 @@ fn handle_debug_ui_toggle(
     buttons: Res<ButtonInput<KeyCode>>,
     fluid_params: Res<FluidParams>,
     mouse_interaction: Res<MouseInteraction>,
+    gpu_state: Res<GpuState>,
+    perf_stats: Res<GpuPerformanceStats>,
 ) {
     if buttons.just_pressed(KeyCode::F1) {
         debug_ui_state.visible = !debug_ui_state.visible;
         
-        if let Ok((mut node, mut text)) = query.get_single_mut() {
+        if let Ok((mut node, mut text)) = query.single_mut() {
             node.display = if debug_ui_state.visible {
                 Display::Flex
             } else {
@@ -281,13 +298,13 @@ fn handle_debug_ui_toggle(
             
             if debug_ui_state.visible {
                 // Update parameters display when showing
-                update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction);
+                update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction, &gpu_state, &perf_stats);
                 *text = Text::new(debug_ui_state.settings_text.clone());
             }
         }
     } else if debug_ui_state.visible {
         // Update text content even when not toggling visibility
-        if let Ok((_, mut text)) = query.get_single_mut() {
+        if let Ok((_, mut text)) = query.single_mut() {
             *text = Text::new(debug_ui_state.settings_text.clone());
         }
     }

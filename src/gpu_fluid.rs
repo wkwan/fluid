@@ -11,6 +11,7 @@ use bevy::{
         RenderApp, Render, RenderSet, Extract, ExtractSchedule,
     },
     asset::AssetServer,
+    log::info,
 };
 use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
@@ -22,17 +23,21 @@ pub struct GpuFluidPlugin;
 impl Plugin for GpuFluidPlugin {
     fn build(&self, app: &mut App) {
         // Main app systems
-        app.add_systems(Update, handle_mouse_input);
+        app.add_systems(Update, handle_mouse_input)
+           .init_resource::<GpuState>()
+           .init_resource::<GpuPerformanceStats>()
+           .add_systems(Update, update_gpu_performance);
 
         // Render app systems for GPU processing
         let render_app = app.sub_app_mut(RenderApp);
         render_app
             .init_resource::<FluidPipeline>()
             .init_resource::<FluidBindGroup>()
+            .init_resource::<RenderGpuState>()
             // Extract resources from the main world
-            .add_systems(ExtractSchedule, extract_fluid_params)
-            .add_systems(Render, prepare_bind_groups.in_set(RenderSet::Prepare))
-            .add_systems(Render, queue_particle_buffers.in_set(RenderSet::Queue));
+            .add_systems(ExtractSchedule, (extract_fluid_params, extract_gpu_state))
+            .add_systems(Render, prepare_bind_groups.after(RenderSet::Prepare))
+            .add_systems(Render, queue_particle_buffers.after(RenderSet::Queue));
     }
 }
 
@@ -44,6 +49,50 @@ struct FluidComputeState {
     particle_densities: Vec<f32>,
     particle_pressures: Vec<f32>,
     readback_scheduled: bool,
+}
+
+// Track GPU state and errors
+#[derive(Resource, Clone)]
+pub struct GpuState {
+    pub enabled: bool,
+    pub error_count: u32,
+    pub last_error: Option<String>,
+}
+
+impl Default for GpuState {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            error_count: 0,
+            last_error: None,
+        }
+    }
+}
+
+// Render world copy of GPU state
+#[derive(Resource, Clone, Default)]
+struct RenderGpuState {
+    enabled: bool,
+    error_count: u32,
+    last_error: Option<String>,
+}
+
+// Track GPU performance data
+#[derive(Resource)]
+pub struct GpuPerformanceStats {
+    pub frame_times: Vec<f32>,
+    pub avg_frame_time: f32,
+    pub max_sample_count: usize,
+}
+
+impl Default for GpuPerformanceStats {
+    fn default() -> Self {
+        Self {
+            frame_times: Vec::with_capacity(100),
+            avg_frame_time: 0.0,
+            max_sample_count: 100,
+        }
+    }
 }
 
 // Render app resources
@@ -66,6 +115,7 @@ struct FluidBindGroup {
     particle_buffer: Option<Buffer>,
     params_buffer: Option<Buffer>,
     num_particles: u32,
+    pipeline_ready: bool,
 }
 
 // Extracted params for the render world
@@ -83,17 +133,59 @@ struct ExtractedFluidParams {
     near_pressures: Vec<f32>,
 }
 
+// Extract GPU state to render world
+fn extract_gpu_state(
+    mut commands: Commands,
+    gpu_state: Extract<Res<GpuState>>,
+) {
+    commands.insert_resource(RenderGpuState {
+        enabled: gpu_state.enabled,
+        error_count: gpu_state.error_count,
+        last_error: gpu_state.last_error.clone(),
+    });
+}
+
 // GPU-compatible structures
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct GpuParticle {
     position: [f32; 2],
+    padding0: [f32; 2],  // Padding for 16-byte alignment
     velocity: [f32; 2],
+    padding1: [f32; 2],  // Padding for 16-byte alignment
     density: f32,
     pressure: f32,
     near_density: f32,
     near_pressure: f32,
-    _padding: [f32; 8],
+}
+
+// Update GPU performance stats
+fn update_gpu_performance(
+    time: Res<Time>,
+    gpu_state: Res<GpuState>,
+    mut perf_stats: ResMut<GpuPerformanceStats>,
+) {
+    if !gpu_state.enabled {
+        // Clear stats when GPU is disabled
+        perf_stats.frame_times.clear();
+        perf_stats.avg_frame_time = 0.0;
+        return;
+    }
+
+    // Add current frame time
+    let frame_time = time.delta_secs() * 1000.0; // Convert to ms
+    perf_stats.frame_times.push(frame_time);
+    
+    // Keep only the most recent samples
+    if perf_stats.frame_times.len() > perf_stats.max_sample_count {
+        perf_stats.frame_times.remove(0);
+    }
+    
+    // Calculate average
+    if !perf_stats.frame_times.is_empty() {
+        let sum: f32 = perf_stats.frame_times.iter().sum();
+        perf_stats.avg_frame_time = sum / perf_stats.frame_times.len() as f32;
+    }
 }
 
 #[repr(C)]
@@ -111,22 +203,27 @@ struct GpuFluidParams {
     particle_radius: f32,
     dt: f32,
     
-    // Vec4 aligned group 3 and 4
+    // Vec4 aligned group 3
     boundary_min: [f32; 2],
+    boundary_min_padding: [f32; 2],  // Padding to align vec2
+    
+    // Vec4 aligned group 4
     boundary_max: [f32; 2],
-    gravity: [f32; 2],
-    padding0: [f32; 2],  // Padding to ensure vec2 alignment
+    boundary_max_padding: [f32; 2],  // Padding to align vec2
     
     // Vec4 aligned group 5
+    gravity: [f32; 2],
+    gravity_padding: [f32; 2],  // Padding to align vec2
+    
+    // Vec4 aligned group 6
     mouse_position: [f32; 2],
     mouse_radius: f32,
     mouse_strength: f32,
     
-    // Vec4 aligned group 6
+    // Vec4 aligned group 7
     mouse_active: u32,
     mouse_repel: u32,
-    padding1: u32,
-    padding2: u32,
+    padding: [u32; 2],  // Padding to ensure alignment
 }
 
 // Handle mouse input for interaction with the fluid
@@ -136,6 +233,7 @@ fn handle_mouse_input(
     windows: Query<&Window>,
     mut mouse_interaction: ResMut<MouseInteraction>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
+    mut gpu_state: ResMut<GpuState>,
 ) {
     // Handle mouse interaction
     if let Some(window) = windows.iter().next() {
@@ -159,6 +257,16 @@ fn handle_mouse_input(
     } else if keys.just_pressed(KeyCode::Digit3) {
         mouse_interaction.strength = 3000.0;
     }
+    
+    // Toggle GPU acceleration with G key
+    if keys.just_pressed(KeyCode::KeyG) {
+        gpu_state.enabled = !gpu_state.enabled;
+        if gpu_state.enabled {
+            info!("GPU acceleration enabled");
+        } else {
+            info!("GPU acceleration disabled (using CPU fallback)");
+        }
+    }
 }
 
 // Extract data from the main world to the render world
@@ -168,7 +276,13 @@ fn extract_fluid_params(
     mouse_interaction: Extract<Res<MouseInteraction>>,
     time: Extract<Res<Time>>,
     particles: Extract<Query<(&Particle, &Transform)>>,
+    gpu_state: Extract<Res<GpuState>>,
 ) {
+    // Skip extraction if GPU is disabled
+    if !gpu_state.enabled {
+        return;
+    }
+
     let mut positions = Vec::with_capacity(particles.iter().len());
     let mut velocities = Vec::with_capacity(particles.iter().len());
     let mut densities = Vec::with_capacity(particles.iter().len());
@@ -205,6 +319,8 @@ fn prepare_bind_groups(
     render_device: Res<RenderDevice>,
     asset_server: Res<AssetServer>,
     pipeline_cache: ResMut<PipelineCache>,
+    mut bind_group: ResMut<FluidBindGroup>,
+    _gpu_state: ResMut<RenderGpuState>,
 ) {
     // Create bind group layout if it doesn't exist
     if fluid_pipeline.bind_group_layout.is_none() {
@@ -233,9 +349,8 @@ fn prepare_bind_groups(
             },
         ];
         
-        let bind_group_layout = render_device.create_bind_group_layout("fluid_simulation_bind_group_layout", &entries);
-        
-        fluid_pipeline.bind_group_layout = Some(bind_group_layout);
+        let layout = render_device.create_bind_group_layout("fluid_simulation_bind_group_layout", &entries);
+        fluid_pipeline.bind_group_layout = Some(layout);
     }
 
     // Create compute pipelines if they don't exist
@@ -286,6 +401,13 @@ fn prepare_bind_groups(
         let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
         fluid_pipeline.integration_id = Some(id);
     }
+
+    // Check if all pipelines are available
+    let all_pipelines_ready = fluid_pipeline.density_pressure_pipeline.is_some() &&
+                              fluid_pipeline.forces_pipeline.is_some() &&
+                              fluid_pipeline.integration_pipeline.is_some();
+
+    bind_group.pipeline_ready = all_pipelines_ready;
 }
 
 // Setup buffers and bind groups for GPU computation
@@ -294,9 +416,19 @@ fn queue_particle_buffers(
     mut fluid_pipeline: ResMut<FluidPipeline>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
-    extracted_params: Res<ExtractedFluidParams>,
+    extracted_params: Option<Res<ExtractedFluidParams>>,
     pipeline_cache: Res<PipelineCache>,
+    mut gpu_state: ResMut<RenderGpuState>,
 ) {
+    // Check if params were extracted
+    let extracted_params = match extracted_params {
+        Some(params) => params,
+        None => {
+            // No params extracted, GPU might be disabled or there's an error
+            return;
+        }
+    };
+    
     let num_particles = extracted_params.num_particles;
     if num_particles == 0 {
         return;
@@ -333,6 +465,9 @@ fn queue_particle_buffers(
         return;
     }
 
+    // Update pipeline ready state
+    fluid_bind_group.pipeline_ready = true;
+
     // Check if we need to create new buffers (e.g., different particle count)
     let needs_new_buffers = match (&fluid_bind_group.particle_buffer, fluid_bind_group.num_particles) {
         (None, _) => true,
@@ -345,12 +480,13 @@ fn queue_particle_buffers(
     for i in 0..num_particles {
         gpu_particles.push(GpuParticle {
             position: [extracted_params.particle_positions[i].x, extracted_params.particle_positions[i].y],
+            padding0: [0.0, 0.0],
             velocity: [extracted_params.particle_velocities[i].x, extracted_params.particle_velocities[i].y],
+            padding1: [0.0, 0.0],
             density: extracted_params.particle_densities[i],
             pressure: extracted_params.particle_pressures[i],
             near_density: extracted_params.near_densities[i],
             near_pressure: extracted_params.near_pressures[i],
-            _padding: [0.0; 8],
         });
     }
 
@@ -370,12 +506,16 @@ fn queue_particle_buffers(
             extracted_params.params.boundary_min.x,
             extracted_params.params.boundary_min.y,
         ],
+        boundary_min_padding: [0.0, 0.0],  // New padding
+        
         boundary_max: [
             extracted_params.params.boundary_max.x,
             extracted_params.params.boundary_max.y,
         ],
+        boundary_max_padding: [0.0, 0.0],  // New padding
+        
         gravity: [0.0, -9.81], // Hardcoded gravity
-        padding0: [0.0, 0.0],  // New padding
+        gravity_padding: [0.0, 0.0],  // New padding
         
         mouse_position: [extracted_params.mouse.position.x, extracted_params.mouse.position.y],
         mouse_radius: extracted_params.mouse.radius,
@@ -383,25 +523,28 @@ fn queue_particle_buffers(
         
         mouse_active: if extracted_params.mouse.active { 1 } else { 0 },
         mouse_repel: if extracted_params.mouse.repel { 1 } else { 0 },
-        padding1: 0,
-        padding2: 0,
+        padding: [0, 0],  // New padding
     };
 
     if needs_new_buffers {
         // Create particle buffer
-        let particle_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        let particle_buffer_descriptor = BufferInitDescriptor {
             label: Some("particle_buffer"),
             contents: bytemuck::cast_slice(&gpu_particles),
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        });
-
+        };
+        
+        let particle_buffer = render_device.create_buffer_with_data(&particle_buffer_descriptor);
+        
         // Create params buffer
-        let params_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        let params_buffer_descriptor = BufferInitDescriptor {
             label: Some("fluid_params_buffer"),
             contents: bytemuck::bytes_of(&gpu_params),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-
+        };
+        
+        let params_buffer = render_device.create_buffer_with_data(&params_buffer_descriptor);
+        
         // Create bind group entries
         let bind_group_entries = vec![
             BindGroupEntry {
@@ -420,7 +563,7 @@ fn queue_particle_buffers(
             fluid_pipeline.bind_group_layout.as_ref().unwrap(),
             &bind_group_entries
         );
-
+        
         fluid_bind_group.particle_buffer = Some(particle_buffer);
         fluid_bind_group.params_buffer = Some(params_buffer);
         fluid_bind_group.bind_group = Some(bind_group);
@@ -446,7 +589,8 @@ fn queue_particle_buffers(
         fluid_pipeline.forces_pipeline.as_ref(),
         fluid_pipeline.integration_pipeline.as_ref(),
     ) {
-        let mut encoder = render_device.create_command_encoder(&Default::default());
+        let encoder_descriptor = Default::default();
+        let mut encoder = render_device.create_command_encoder(&encoder_descriptor);
         let workgroup_count = ((num_particles as f32) / 64.0).ceil() as u32;
 
         // Density and pressure pass
@@ -474,5 +618,12 @@ fn queue_particle_buffers(
         }
 
         render_queue.submit(std::iter::once(encoder.finish()));
+        
+        // Reset error count since we had a successful submission
+        if gpu_state.error_count > 0 {
+            info!("GPU pipeline recovered after previous errors");
+            gpu_state.error_count = 0;
+            gpu_state.last_error = None;
+        }
     }
 } 
