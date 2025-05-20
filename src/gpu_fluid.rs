@@ -101,12 +101,20 @@ struct FluidPipeline {
     density_pressure_pipeline: Option<ComputePipeline>,
     forces_pipeline: Option<ComputePipeline>,
     integration_pipeline: Option<ComputePipeline>,
+    spatial_hash_pipeline: Option<ComputePipeline>,
+    reorder_pipeline: Option<ComputePipeline>,
+    reorder_copyback_pipeline: Option<ComputePipeline>,
+    calculate_offsets_pipeline: Option<ComputePipeline>,
     bind_group_layout: Option<BindGroupLayout>,
     
     // Store pipeline IDs for retrieval
     density_pressure_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
     forces_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
     integration_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
+    spatial_hash_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
+    reorder_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
+    reorder_copyback_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
+    calculate_offsets_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
 }
 
 #[derive(Resource, Default)]
@@ -114,6 +122,14 @@ struct FluidBindGroup {
     bind_group: Option<BindGroup>,
     particle_buffer: Option<Buffer>,
     params_buffer: Option<Buffer>,
+    
+    // Spatial hash buffers
+    spatial_keys_buffer: Option<Buffer>,
+    spatial_indices_buffer: Option<Buffer>,
+    spatial_offsets_buffer: Option<Buffer>,
+    target_particles_buffer: Option<Buffer>,
+    
+    // Pipeline state
     num_particles: u32,
     pipeline_ready: bool,
 }
@@ -347,6 +363,39 @@ fn prepare_bind_groups(
                 },
                 count: None,
             },
+            // Spatial hash keys (read/write)
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Spatial hash indices (read/write)
+            BindGroupLayoutEntry {
+                binding: 3,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Spatial hash offsets (read/write)
+            BindGroupLayoutEntry {
+                binding: 4,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ];
         
         let layout = render_device.create_bind_group_layout("fluid_simulation_bind_group_layout", &entries);
@@ -354,6 +403,76 @@ fn prepare_bind_groups(
     }
 
     // Create compute pipelines if they don't exist
+    
+    // 1. Spatial hash pipeline
+    if fluid_pipeline.spatial_hash_pipeline.is_none() && fluid_pipeline.spatial_hash_id.is_none() {
+        let shader = asset_server.load("shaders/spatial_hash.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("spatial_hash_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.spatial_hash_id = Some(id);
+    }
+    
+    // 2. Calculate offsets pipeline
+    if fluid_pipeline.calculate_offsets_pipeline.is_none() && fluid_pipeline.calculate_offsets_id.is_none() {
+        let shader = asset_server.load("shaders/calculate_offsets.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("calculate_offsets_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.calculate_offsets_id = Some(id);
+    }
+    
+    // 3. Reorder pipeline
+    if fluid_pipeline.reorder_pipeline.is_none() && fluid_pipeline.reorder_id.is_none() {
+        let shader = asset_server.load("shaders/reorder.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("reorder_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.reorder_id = Some(id);
+    }
+    
+    // 4. Reorder copyback pipeline
+    if fluid_pipeline.reorder_copyback_pipeline.is_none() && fluid_pipeline.reorder_copyback_id.is_none() {
+        let shader = asset_server.load("shaders/reorder_copyback.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("reorder_copyback_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.reorder_copyback_id = Some(id);
+    }
+
+    // 5. Density pressure pipeline
     if fluid_pipeline.density_pressure_pipeline.is_none() && fluid_pipeline.density_pressure_id.is_none() {
         let shader = asset_server.load("shaders/density_pressure.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
@@ -370,6 +489,7 @@ fn prepare_bind_groups(
         fluid_pipeline.density_pressure_id = Some(id);
     }
 
+    // 6. Forces pipeline
     if fluid_pipeline.forces_pipeline.is_none() && fluid_pipeline.forces_id.is_none() {
         let shader = asset_server.load("shaders/forces.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
@@ -386,6 +506,7 @@ fn prepare_bind_groups(
         fluid_pipeline.forces_id = Some(id);
     }
 
+    // 7. Integration pipeline
     if fluid_pipeline.integration_pipeline.is_none() && fluid_pipeline.integration_id.is_none() {
         let shader = asset_server.load("shaders/integration.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
@@ -403,9 +524,14 @@ fn prepare_bind_groups(
     }
 
     // Check if all pipelines are available
-    let all_pipelines_ready = fluid_pipeline.density_pressure_pipeline.is_some() &&
-                              fluid_pipeline.forces_pipeline.is_some() &&
-                              fluid_pipeline.integration_pipeline.is_some();
+    let all_pipelines_ready = 
+        fluid_pipeline.spatial_hash_pipeline.is_some() &&
+        fluid_pipeline.calculate_offsets_pipeline.is_some() &&
+        fluid_pipeline.reorder_pipeline.is_some() &&
+        fluid_pipeline.reorder_copyback_pipeline.is_some() &&
+        fluid_pipeline.density_pressure_pipeline.is_some() &&
+        fluid_pipeline.forces_pipeline.is_some() &&
+        fluid_pipeline.integration_pipeline.is_some();
 
     bind_group.pipeline_ready = all_pipelines_ready;
 }
@@ -440,6 +566,30 @@ fn queue_particle_buffers(
     }
 
     // Try to retrieve the compute pipelines from the cache
+    if fluid_pipeline.spatial_hash_pipeline.is_none() && fluid_pipeline.spatial_hash_id.is_some() {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.spatial_hash_id.unwrap()) {
+            fluid_pipeline.spatial_hash_pipeline = Some(pipeline.clone());
+        }
+    }
+    
+    if fluid_pipeline.calculate_offsets_pipeline.is_none() && fluid_pipeline.calculate_offsets_id.is_some() {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.calculate_offsets_id.unwrap()) {
+            fluid_pipeline.calculate_offsets_pipeline = Some(pipeline.clone());
+        }
+    }
+    
+    if fluid_pipeline.reorder_pipeline.is_none() && fluid_pipeline.reorder_id.is_some() {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.reorder_id.unwrap()) {
+            fluid_pipeline.reorder_pipeline = Some(pipeline.clone());
+        }
+    }
+    
+    if fluid_pipeline.reorder_copyback_pipeline.is_none() && fluid_pipeline.reorder_copyback_id.is_some() {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.reorder_copyback_id.unwrap()) {
+            fluid_pipeline.reorder_copyback_pipeline = Some(pipeline.clone());
+        }
+    }
+
     if fluid_pipeline.density_pressure_pipeline.is_none() && fluid_pipeline.density_pressure_id.is_some() {
         if let Some(pipeline) = pipeline_cache.get_compute_pipeline(fluid_pipeline.density_pressure_id.unwrap()) {
             fluid_pipeline.density_pressure_pipeline = Some(pipeline.clone());
@@ -459,7 +609,11 @@ fn queue_particle_buffers(
     }
 
     // Check if all pipelines are available; if not, return and wait for the next frame
-    if fluid_pipeline.density_pressure_pipeline.is_none() ||
+    if fluid_pipeline.spatial_hash_pipeline.is_none() ||
+       fluid_pipeline.calculate_offsets_pipeline.is_none() ||
+       fluid_pipeline.reorder_pipeline.is_none() ||
+       fluid_pipeline.reorder_copyback_pipeline.is_none() ||
+       fluid_pipeline.density_pressure_pipeline.is_none() ||
        fluid_pipeline.forces_pipeline.is_none() ||
        fluid_pipeline.integration_pipeline.is_none() {
         return;
@@ -545,6 +699,42 @@ fn queue_particle_buffers(
         
         let params_buffer = render_device.create_buffer_with_data(&params_buffer_descriptor);
         
+        // Create spatial hash buffers
+        let spatial_keys_data = vec![0u32; num_particles];
+        let spatial_keys_descriptor = BufferInitDescriptor {
+            label: Some("spatial_keys_buffer"),
+            contents: bytemuck::cast_slice(&spatial_keys_data),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        };
+        
+        let spatial_keys_buffer = render_device.create_buffer_with_data(&spatial_keys_descriptor);
+        
+        let spatial_indices_data = vec![0u32; num_particles];
+        let spatial_indices_descriptor = BufferInitDescriptor {
+            label: Some("spatial_indices_buffer"),
+            contents: bytemuck::cast_slice(&spatial_indices_data),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        };
+        
+        let spatial_indices_buffer = render_device.create_buffer_with_data(&spatial_indices_descriptor);
+        
+        let spatial_offsets_data = vec![0xFFFFFFFFu32; num_particles];
+        let spatial_offsets_descriptor = BufferInitDescriptor {
+            label: Some("spatial_offsets_buffer"),
+            contents: bytemuck::cast_slice(&spatial_offsets_data),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        };
+        
+        let spatial_offsets_buffer = render_device.create_buffer_with_data(&spatial_offsets_descriptor);
+        
+        let target_particles_descriptor = BufferInitDescriptor {
+            label: Some("target_particles_buffer"),
+            contents: bytemuck::cast_slice(&gpu_particles),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        };
+        
+        let target_particles_buffer = render_device.create_buffer_with_data(&target_particles_descriptor);
+        
         // Create bind group entries
         let bind_group_entries = vec![
             BindGroupEntry {
@@ -554,6 +744,18 @@ fn queue_particle_buffers(
             BindGroupEntry {
                 binding: 1,
                 resource: params_buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: spatial_keys_buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 3,
+                resource: spatial_indices_buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 4,
+                resource: spatial_offsets_buffer.as_entire_binding(),
             },
         ];
         
@@ -566,6 +768,10 @@ fn queue_particle_buffers(
         
         fluid_bind_group.particle_buffer = Some(particle_buffer);
         fluid_bind_group.params_buffer = Some(params_buffer);
+        fluid_bind_group.spatial_keys_buffer = Some(spatial_keys_buffer);
+        fluid_bind_group.spatial_indices_buffer = Some(spatial_indices_buffer);
+        fluid_bind_group.spatial_offsets_buffer = Some(spatial_offsets_buffer);
+        fluid_bind_group.target_particles_buffer = Some(target_particles_buffer);
         fluid_bind_group.bind_group = Some(bind_group);
         fluid_bind_group.num_particles = num_particles as u32;
     } else {
@@ -581,10 +787,18 @@ fn queue_particle_buffers(
 
     // Queue compute passes only if all components are ready
     if let (Some(bind_group), 
+            Some(spatial_hash_pipeline),
+            Some(calculate_offsets_pipeline),
+            Some(_reorder_pipeline),
+            Some(_reorder_copyback_pipeline),
             Some(density_pipeline), 
             Some(forces_pipeline), 
             Some(integration_pipeline)) = (
         &fluid_bind_group.bind_group,
+        fluid_pipeline.spatial_hash_pipeline.as_ref(),
+        fluid_pipeline.calculate_offsets_pipeline.as_ref(),
+        fluid_pipeline.reorder_pipeline.as_ref(),
+        fluid_pipeline.reorder_copyback_pipeline.as_ref(),
         fluid_pipeline.density_pressure_pipeline.as_ref(),
         fluid_pipeline.forces_pipeline.as_ref(),
         fluid_pipeline.integration_pipeline.as_ref(),
@@ -592,8 +806,28 @@ fn queue_particle_buffers(
         let encoder_descriptor = Default::default();
         let mut encoder = render_device.create_command_encoder(&encoder_descriptor);
         let workgroup_count = ((num_particles as f32) / 64.0).ceil() as u32;
+        
+        // 1. Spatial hash pass
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+            compute_pass.set_pipeline(spatial_hash_pipeline);
+            compute_pass.set_bind_group(0, bind_group, &[]);
+            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+        
+        // 2. Calculate offsets pass
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+            compute_pass.set_pipeline(calculate_offsets_pipeline);
+            compute_pass.set_bind_group(0, bind_group, &[]);
+            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+        
+        // TODO: In a full implementation, we would need to sort the spatial_keys buffer and update
+        // the spatial_indices buffer accordingly. This would typically be done using a GPU radix sort,
+        // but for simplicity we're skipping the sort step here.
 
-        // Density and pressure pass
+        // 3. Density and pressure pass
         {
             let mut compute_pass = encoder.begin_compute_pass(&Default::default());
             compute_pass.set_pipeline(density_pipeline);
@@ -601,7 +835,7 @@ fn queue_particle_buffers(
             compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
 
-        // Forces pass
+        // 4. Forces pass
         {
             let mut compute_pass = encoder.begin_compute_pass(&Default::default());
             compute_pass.set_pipeline(forces_pipeline);
@@ -609,7 +843,7 @@ fn queue_particle_buffers(
             compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
 
-        // Integration pass
+        // 5. Integration pass
         {
             let mut compute_pass = encoder.begin_compute_pass(&Default::default());
             compute_pass.set_pipeline(integration_pipeline);
