@@ -3,11 +3,13 @@ use bevy::{
     render::{
         render_resource::{
             BufferUsages, BufferInitDescriptor, BindGroupLayoutEntry, BindingType,
-            BufferBindingType, ShaderStages,
+            BufferBindingType, ShaderStages, Buffer, BindGroup, BindGroupLayoutDescriptor,
+            BindGroupDescriptor, BindGroupEntry,
         },
         renderer::RenderDevice,
     },
 };
+use bytemuck::{Pod, Zeroable};
 
 #[derive(Resource)]
 pub struct ParticleRenderResources {
@@ -33,7 +35,7 @@ pub fn create_particle_render_resources(
     // Create instance buffer for particle data
     let instance_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("particle_instance_buffer"),
-        contents: &vec![0u8; (particle_count * std::mem::size_of::<ParticleInstance>()) as usize],
+        contents: &vec![0u8; (particle_count as usize * std::mem::size_of::<ParticleInstance>())],
         usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
     });
 
@@ -46,9 +48,9 @@ pub fn create_particle_render_resources(
     });
 
     // Create bind group layout
-    let bind_group_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("particle_bind_group_layout"),
-        entries: &[
+    let bind_group_layout = render_device.create_bind_group_layout(
+        "particle_bind_group_layout",
+        &[
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::VERTEX,
@@ -60,17 +62,17 @@ pub fn create_particle_render_resources(
                 count: None,
             },
         ],
-    });
+    );
 
     // Create bind group
-    let bind_group = render_device.create_bind_group(&BindGroupDescriptor {
-        label: Some("particle_bind_group"),
-        layout: &bind_group_layout,
-        entries: &[BindGroupEntry {
+    let bind_group = render_device.create_bind_group(
+        "particle_bind_group",
+        &bind_group_layout,
+        &[BindGroupEntry {
             binding: 0,
             resource: instance_buffer.as_entire_binding(),
         }],
-    });
+    );
 
     ParticleRenderResources {
         instance_buffer: Some(instance_buffer),

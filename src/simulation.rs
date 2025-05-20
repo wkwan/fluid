@@ -4,6 +4,53 @@ use crate::math::FluidMath;
 use crate::spatial_hash::SpatialHash;
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 
+// Define ColorMapParams locally since we removed the utility module
+#[derive(Resource, Clone, Copy)]
+pub struct ColorMapParams {
+    pub min_speed: f32,
+    pub max_speed: f32,
+    pub use_velocity_color: bool,
+}
+
+impl Default for ColorMapParams {
+    fn default() -> Self {
+        Self {
+            min_speed: 0.0,
+            max_speed: 500.0,
+            use_velocity_color: true,
+        }
+    }
+}
+
+// Function to map velocity to color
+fn velocity_to_color(velocity: Vec2, min_speed: f32, max_speed: f32) -> Color {
+    // Normalize velocity magnitude to 0-1 range
+    let speed = velocity.length();
+    let normalized_speed = ((speed - min_speed) / (max_speed - min_speed)).clamp(0.0, 1.0);
+    
+    // Create color mapping:
+    // Blue (0, 0, 1) -> Cyan (0, 1, 1) -> Green (0, 1, 0) -> Yellow (1, 1, 0) -> Red (1, 0, 0)
+    let color = if normalized_speed < 0.25 {
+        // Blue to Cyan
+        let t = normalized_speed * 4.0;
+        Color::srgb(0.0, t, 1.0)
+    } else if normalized_speed < 0.5 {
+        // Cyan to Green
+        let t = (normalized_speed - 0.25) * 4.0;
+        Color::srgb(0.0, 1.0, 1.0 - t)
+    } else if normalized_speed < 0.75 {
+        // Green to Yellow
+        let t = (normalized_speed - 0.5) * 4.0;
+        Color::srgb(t, 1.0, 0.0)
+    } else {
+        // Yellow to Red
+        let t = (normalized_speed - 0.75) * 4.0;
+        Color::srgb(1.0, 1.0 - t, 0.0)
+    };
+    
+    color
+}
+
 pub struct SimulationPlugin;
 
 impl Plugin for SimulationPlugin {
@@ -12,6 +59,7 @@ impl Plugin for SimulationPlugin {
            .init_resource::<MouseInteraction>()
            .init_resource::<SpatialHashResource>()
            .init_resource::<DebugUiState>()
+           .init_resource::<ColorMapParams>()
            .add_systems(Startup, setup_simulation)
            .add_systems(Update, handle_input)
            .add_systems(Update, apply_external_forces)
@@ -21,7 +69,7 @@ impl Plugin for SimulationPlugin {
            .add_systems(Update, calculate_viscosity)
            .add_systems(Update, update_positions)
            .add_systems(Update, handle_collisions)
-           .add_systems(Update, update_sprite_colors)
+           .add_systems(Update, update_particle_colors)
            .add_systems(Update, update_fps_display)
            .add_systems(Update, handle_debug_ui_toggle);
     }
@@ -169,6 +217,7 @@ fn handle_input(
     mut debug_ui_state: ResMut<DebugUiState>,
     gpu_state: Res<GpuState>,
     perf_stats: Res<GpuPerformanceStats>,
+    mut color_params: ResMut<ColorMapParams>,
 ) {
     // Handle mouse interaction
     if let Some(window) = windows.iter().next() {
@@ -191,6 +240,25 @@ fn handle_input(
         mouse_interaction.strength = 2000.0;
     } else if keys.just_pressed(KeyCode::Digit3) {
         mouse_interaction.strength = 3000.0;
+    }
+    
+    // Toggle color mode with C key
+    if keys.just_pressed(KeyCode::KeyC) {
+        color_params.use_velocity_color = !color_params.use_velocity_color;
+    }
+    
+    // Adjust color map min/max speed
+    if keys.pressed(KeyCode::KeyM) {
+        color_params.min_speed += 5.0;
+    }
+    if keys.pressed(KeyCode::KeyN) {
+        color_params.min_speed = (color_params.min_speed - 5.0).max(0.0);
+    }
+    if keys.pressed(KeyCode::KeyK) {
+        color_params.max_speed += 5.0;
+    }
+    if keys.pressed(KeyCode::KeyJ) {
+        color_params.max_speed = (color_params.max_speed - 5.0).max(color_params.min_speed + 1.0);
     }
     
     // Parameter adjustment keys - only when debug UI is visible
@@ -235,7 +303,7 @@ fn handle_input(
     }
     
     // Update settings text content
-    update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction, &gpu_state, &perf_stats);
+    update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction, &gpu_state, &perf_stats, &color_params);
 }
 
 // Helper function to update settings text
@@ -245,6 +313,7 @@ fn update_settings_text(
     mouse_interaction: &MouseInteraction,
     gpu_state: &GpuState,
     perf_stats: &GpuPerformanceStats,
+    color_params: &ColorMapParams,
 ) {
     debug_ui_state.settings_text = format!(
         "Simulation Parameters (F1 to hide)\n\n\
@@ -257,6 +326,10 @@ fn update_settings_text(
         Mouse Radius: {:.1}\n\n\
         [G] GPU Acceleration: {}\n\
         Avg Frame Time: {:.2} ms\n\
+        \n\
+        [C] Color by Velocity: {}\n\
+        [M/N] Min Speed: {:.1}\n\
+        [K/J] Max Speed: {:.1}\n\
         {}\n\n\
         [X] Reset to Defaults",
         fluid_params.smoothing_radius,
@@ -268,6 +341,9 @@ fn update_settings_text(
         mouse_interaction.radius,
         if gpu_state.enabled { "Enabled" } else { "Disabled (CPU)" },
         perf_stats.avg_frame_time,
+        if color_params.use_velocity_color { "Yes" } else { "No" },
+        color_params.min_speed,
+        color_params.max_speed,
         if let Some(err) = &gpu_state.last_error {
             format!("GPU Error: {}", err)
         } else {
@@ -281,10 +357,6 @@ fn handle_debug_ui_toggle(
     mut debug_ui_state: ResMut<DebugUiState>,
     mut query: Query<(&mut Node, &mut Text), With<SettingsText>>,
     buttons: Res<ButtonInput<KeyCode>>,
-    fluid_params: Res<FluidParams>,
-    mouse_interaction: Res<MouseInteraction>,
-    gpu_state: Res<GpuState>,
-    perf_stats: Res<GpuPerformanceStats>,
 ) {
     if buttons.just_pressed(KeyCode::F1) {
         debug_ui_state.visible = !debug_ui_state.visible;
@@ -297,8 +369,7 @@ fn handle_debug_ui_toggle(
             };
             
             if debug_ui_state.visible {
-                // Update parameters display when showing
-                update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction, &gpu_state, &perf_stats);
+                // Update text content when showing
                 *text = Text::new(debug_ui_state.settings_text.clone());
             }
         }
@@ -533,22 +604,29 @@ fn handle_collisions(
     }
 }
 
-fn update_sprite_colors(
-    mut query: Query<(&Particle, &mut Sprite)>,
+fn update_particle_colors(
+    particles_query: Query<(&Particle, &MeshMaterial2d<ColorMaterial>)>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    color_params: Res<ColorMapParams>,
 ) {
-    for (particle, mut sprite) in query.iter_mut() {
-        // Normalize the density
-        let normalized_density = (particle.density / REST_DENSITY).clamp(0.0, 3.0) / 3.0;
+    for (particle, mesh_material) in particles_query.iter() {
+        let color = if color_params.use_velocity_color {
+            // Use velocity-based color mapping
+            velocity_to_color(particle.velocity, color_params.min_speed, color_params.max_speed)
+        } else {
+            // Fallback to density-based coloring (existing behavior)
+            let normalized_density = (particle.density / REST_DENSITY).clamp(0.0, 3.0) / 3.0;
+            Color::srgb(
+                normalized_density,
+                0.5 + normalized_density * 0.5,
+                1.0
+            )
+        };
         
-        // Create a color gradient from blue to cyan to white based on density
-        let color = Color::srgb(
-            normalized_density,
-            0.5 + normalized_density * 0.5,
-            1.0
-        );
-        
-        // Update sprite color
-        sprite.color = color;
+        // Update material color
+        if let Some(material) = materials.get_mut(&mesh_material.0) {
+            material.color = color;
+        }
     }
 }
 

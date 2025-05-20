@@ -1,7 +1,5 @@
 use bevy::prelude::*;
 use rand::Rng;
-use bevy::math::primitives::{Circle, Rectangle};
-use bevy::sprite::AlphaMode2d;
 
 use crate::simulation::{Particle, FluidParams};
 
@@ -68,12 +66,22 @@ fn handle_spawn_input(
         let mut rng = rand::thread_rng();
         let spawned_particles = spawn_in_regions(&spawn_regions, &mut rng);
         
-        // Create a circle mesh and material that will be reused
+        // Create a shared circle mesh
         let circle_mesh = meshes.add(Circle::new(5.0));
         
         for (position, velocity) in spawned_particles {
-            // Spawn with Mesh2d for proper 2D shape rendering
+            // Create a unique material for each particle
+            let particle_material = materials.add(Color::srgb(0.0, 0.5, 0.9));
+            
+            // Spawn with proper mesh and material handles
             commands.spawn((
+                Mesh2d(circle_mesh.clone()),
+                MeshMaterial2d(particle_material),
+                Transform::from_translation(position.extend(0.0)),
+                GlobalTransform::default(),
+                Visibility::default(),
+                ViewVisibility::default(),
+                InheritedVisibility::default(),
                 Particle { 
                     velocity, 
                     density: 0.0,
@@ -81,12 +89,6 @@ fn handle_spawn_input(
                     near_density: 0.0,
                     near_pressure: 0.0,
                 },
-                Mesh2d(circle_mesh.clone()),
-                MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.0, 0.5, 0.9)))),
-                Transform::from_translation(position.extend(0.0)),
-                Visibility::default(),
-                ViewVisibility::default(),
-                InheritedVisibility::default(),
             ));
         }
     }
@@ -104,9 +106,13 @@ fn spawn_particles(
     // Visualize spawn regions
     for region in &spawn_regions.regions {
         commands.spawn((
-            Mesh2d(meshes.add(Rectangle::new(region.size.x, region.size.y))),
-            MeshMaterial2d(materials.add(ColorMaterial::from(region.debug_color.with_alpha(0.2)))),
+            Sprite {
+                color: region.debug_color.with_alpha(0.2),
+                custom_size: Some(region.size),
+                ..default()
+            },
             Transform::from_translation(region.position.extend(-0.1)),
+            GlobalTransform::default(),
             Visibility::default(),
             ViewVisibility::default(),
             InheritedVisibility::default(),
@@ -120,29 +126,39 @@ fn spawn_particles(
     let boundary_height = boundary_max.y - boundary_min.y;
     let boundary_center = (boundary_min + boundary_max) / 2.0;
     
-    // Create boundary rectangle outline (with no fill)
+    // Create boundary rectangle
     commands.spawn((
-        Mesh2d(meshes.add(Rectangle::new(boundary_width, boundary_height))),
-        MeshMaterial2d(materials.add(ColorMaterial {
+        Sprite {
             color: Color::WHITE,
-            texture: None,
-            alpha_mode: AlphaMode2d::Blend,
-            uv_transform: Default::default(),
-        })),
+            custom_size: Some(Vec2::new(boundary_width, boundary_height)),
+            ..default()
+        },
         Transform::from_translation(boundary_center.extend(-0.2)),
+        GlobalTransform::default(),
         Visibility::default(),
         ViewVisibility::default(),
         InheritedVisibility::default(),
     ));
     
+    // Create shared circle mesh
+    let circle_mesh = meshes.add(Circle::new(5.0));
+    
     // Spawn initial particles
     let spawned_particles = spawn_in_regions(&spawn_regions, &mut rng);
     
-    // Create a circle mesh that will be reused
-    let circle_mesh = meshes.add(Circle::new(5.0));
-    
     for (position, velocity) in spawned_particles {
+        // Create a unique material for each particle
+        let particle_material = materials.add(Color::srgb(0.0, 0.3, 1.0));
+        
+        // Spawn with proper mesh and material handles
         commands.spawn((
+            Mesh2d(circle_mesh.clone()),
+            MeshMaterial2d(particle_material),
+            Transform::from_translation(position.extend(0.0)),
+            GlobalTransform::default(),
+            Visibility::default(),
+            ViewVisibility::default(),
+            InheritedVisibility::default(),
             Particle {
                 velocity,
                 density: 0.0,
@@ -150,12 +166,6 @@ fn spawn_particles(
                 near_density: 0.0,
                 near_pressure: 0.0,
             },
-            Mesh2d(circle_mesh.clone()),
-            MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.0, 0.5, 0.9)))),
-            Transform::from_translation(position.extend(0.0)),
-            Visibility::default(),
-            ViewVisibility::default(),
-            InheritedVisibility::default(),
         ));
     }
 }
