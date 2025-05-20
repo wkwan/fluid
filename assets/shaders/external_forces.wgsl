@@ -1,4 +1,4 @@
-// Minimal spatial hash shader with only the essential bindings
+// Minimal external forces shader with only the essential bindings
 
 struct Particle {
     position: vec2<f32>,
@@ -55,16 +55,27 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
     
-    // Simple placeholder implementation
-    // In a real implementation, this would compute spatial hashes
-    // For now, we'll just apply a small force based on position
     var particle = particles[index];
     
-    // Apply a small force based on position (simulating spatial interaction)
-    let force_x = sin(particle.position.x * 0.01) * 0.1;
-    let force_y = cos(particle.position.y * 0.01) * 0.1;
+    // Apply gravity force
+    let gravity_force = vec2<f32>(0.0, -9.81);
+    particle.velocity += gravity_force * params.dt;
     
-    particle.velocity += vec2<f32>(force_x, force_y) * params.dt;
+    // Apply mouse interaction if active
+    if params.mouse_active != 0u {
+        let offset_to_mouse = params.mouse_position - particle.position;
+        let dist_squared = dot(offset_to_mouse, offset_to_mouse);
+        
+        if dist_squared < params.mouse_radius * params.mouse_radius {
+            let dist = sqrt(dist_squared);
+            let dir = normalize(offset_to_mouse);
+            let strength = params.mouse_strength * (1.0 - dist / params.mouse_radius);
+            
+            // Apply attraction or repulsion based on mouse button
+            let force_dir = if params.mouse_repel != 0u { -dir } else { dir };
+            particle.velocity += force_dir * strength * params.dt;
+        }
+    }
     
     particles[index] = particle;
 } 

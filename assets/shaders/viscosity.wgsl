@@ -1,4 +1,4 @@
-// Minimal spatial hash shader with only the essential bindings
+// Minimal viscosity shader with only the essential bindings
 
 struct Particle {
     position: vec2<f32>,
@@ -56,15 +56,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     
     // Simple placeholder implementation
-    // In a real implementation, this would compute spatial hashes
-    // For now, we'll just apply a small force based on position
+    // In a real implementation, this would apply viscosity based on neighbors
     var particle = particles[index];
     
-    // Apply a small force based on position (simulating spatial interaction)
-    let force_x = sin(particle.position.x * 0.01) * 0.1;
-    let force_y = cos(particle.position.y * 0.01) * 0.1;
+    // Apply viscosity effect by damping velocity
+    particle.velocity *= 0.99;
     
-    particle.velocity += vec2<f32>(force_x, force_y) * params.dt;
+    // Apply stronger damping to high-velocity particles
+    let speed = length(particle.velocity);
+    if speed > 100.0 {
+        particle.velocity *= 0.95;
+    }
     
     particles[index] = particle;
 } 
