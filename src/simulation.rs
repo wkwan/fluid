@@ -59,6 +59,7 @@ impl Plugin for SimulationPlugin {
            .init_resource::<MouseInteraction>()
            .init_resource::<SpatialHashResource>()
            .init_resource::<DebugUiState>()
+           .init_resource::<SimulationDimension>()
            .init_resource::<ColorMapParams>()
            .add_systems(Startup, setup_simulation)
            .add_systems(Update, handle_input)
@@ -227,6 +228,7 @@ fn handle_input(
     gpu_state: Res<GpuState>,
     mut perf_stats: ResMut<GpuPerformanceStats>,
     mut color_params: ResMut<ColorMapParams>,
+    mut sim_dim: ResMut<SimulationDimension>,
 ) {
     // Handle mouse interaction
     if let Some(window) = windows.iter().next() {
@@ -325,7 +327,16 @@ fn handle_input(
     }
     
     // Update settings text content
-    update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction, &gpu_state, &perf_stats, &color_params);
+    update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction, &gpu_state, &perf_stats, &color_params, &*sim_dim);
+
+    // Toggle between 2D and 3D simulation dimension
+    if keys.just_pressed(KeyCode::KeyZ) {
+        *sim_dim = match *sim_dim {
+            SimulationDimension::Dim2 => SimulationDimension::Dim3,
+            SimulationDimension::Dim3 => SimulationDimension::Dim2,
+        };
+        info!("Switched to {:?} mode", *sim_dim);
+    }
 }
 
 // Helper function to update settings text
@@ -336,6 +347,7 @@ fn update_settings_text(
     gpu_state: &GpuState,
     perf_stats: &GpuPerformanceStats,
     color_params: &ColorMapParams,
+    sim_dim: &SimulationDimension,
 ) {
     debug_ui_state.settings_text = format!(
         "Simulation Parameters (F1 to hide)\n\n\
@@ -356,6 +368,8 @@ fn update_settings_text(
         [M/N] Min Speed: {:.1}\n\
         [K/J] Max Speed: {:.1}\n\
         {}\n\n\
+        [Z] Toggle Dimension (current: {})
+        \n\
         [X] Reset to Defaults",
         fluid_params.smoothing_radius,
         fluid_params.pressure_multiplier,
@@ -377,7 +391,8 @@ fn update_settings_text(
             format!("GPU Error: {}", err)
         } else {
             String::new()
-        }
+        },
+        if *sim_dim == SimulationDimension::Dim2 { "2D" } else { "3D" }
     );
 }
 
@@ -789,5 +804,17 @@ fn track_max_velocity(
         } else {
             perf_stats.iterations_per_frame = (base_iterations as f32 * velocity_scale).max(1.0) as u32;
         }
+    }
+}
+
+#[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SimulationDimension {
+    Dim2,
+    Dim3,
+}
+
+impl Default for SimulationDimension {
+    fn default() -> Self {
+        SimulationDimension::Dim2
     }
 } 
