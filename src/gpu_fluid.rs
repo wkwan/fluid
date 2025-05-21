@@ -178,14 +178,32 @@ struct ExtractedFluidParams {
     near_pressures: Vec<f32>,
 }
 
-// Resource to handle GPU result readback
-#[derive(Resource, Default)]
+// Resource to handle GPU result readback - improved with triple buffering
+#[derive(Resource)]
 struct GpuResultsBuffer {
-    readback_buffer: Option<Buffer>,
+    readback_buffers: [Option<Buffer>; 3], // Triple buffering for even better async performance
+    active_buffer_index: usize,
     readback_scheduled: bool,
-    buffer_mapped: bool,
+    is_mapped: bool,
     gpu_data: Vec<GpuParticle>,
     debug_log: bool,
+    frame_counter: u32, // For controlling readback frequency
+    last_readback_time: Option<std::time::Instant>,
+}
+
+impl Default for GpuResultsBuffer {
+    fn default() -> Self {
+        Self {
+            readback_buffers: [None, None, None],
+            active_buffer_index: 0,
+            readback_scheduled: false,
+            is_mapped: false,
+            gpu_data: Vec::new(),
+            debug_log: false,
+            frame_counter: 0,
+            last_readback_time: None,
+        }
+    }
 }
 
 // Resource to hold GPU particle data in the main world
@@ -647,18 +665,18 @@ fn prepare_bind_groups(
         // ...existing buffer creation code...
         
         // Create readback buffer for returning results to CPU
-        if gpu_results.readback_buffer.is_none() || bind_group.num_particles != num_particles as u32 {
+        if gpu_results.readback_buffers[0].is_none() || bind_group.num_particles != num_particles as u32 {
             let buffer_size = std::mem::size_of::<GpuParticle>() * num_particles;
             
             // Create a buffer suitable for readback (mapping)
             let buffer = render_device.create_buffer(&bevy::render::render_resource::BufferDescriptor {
-                label: Some("particle_readback_buffer"),
+                label: Some("particle_readback_buffer_0"),
                 size: buffer_size as u64,
                 usage: bevy::render::render_resource::BufferUsages::COPY_DST | bevy::render::render_resource::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
             
-            gpu_results.readback_buffer = Some(buffer);
+            gpu_results.readback_buffers[0] = Some(buffer);
             gpu_results.readback_scheduled = false;
             gpu_results.gpu_data.clear();
             
@@ -669,389 +687,108 @@ fn prepare_bind_groups(
     }
 }
 
-// Queue particle buffers for GPU computation with optimized workgroups
+// Prepare readback buffers at the right moment - key for triple buffering performance
 fn queue_particle_buffers(
-    fluid_bind_group: ResMut<FluidBindGroup>,
-    mut fluid_pipeline: ResMut<FluidPipeline>,
+    _commands: Commands,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
-    extracted_params: Option<Res<ExtractedFluidParams>>,
-    pipeline_cache: Res<PipelineCache>,
-    mut gpu_state: ResMut<RenderGpuState>,
-    perf_stats: Res<GpuPerformanceStats>,
+    fluid_bind_group: Res<FluidBindGroup>,
     mut gpu_results: ResMut<GpuResultsBuffer>,
 ) {
-    // Skip if no data or GPU is disabled
-    if extracted_params.is_none() || !gpu_state.enabled {
+    // Skip if readback is already scheduled
+    if gpu_results.readback_scheduled {
         return;
     }
-    let extracted_data = extracted_params.as_ref().unwrap();
     
-    // Check if pipelines are ready
-    if !fluid_bind_group.pipeline_ready {
-        // First check if pipelines are ready in cache
-        let spatial_hash_pipeline = fluid_pipeline.spatial_hash_id
-            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
-        let calculate_offsets_pipeline = fluid_pipeline.calculate_offsets_id
-            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
-        let reorder_pipeline = fluid_pipeline.reorder_id
-            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
-        let reorder_copyback_pipeline = fluid_pipeline.reorder_copyback_id
-            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
-        let density_pressure_pipeline = fluid_pipeline.density_pressure_id
-            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
-        let forces_pipeline = fluid_pipeline.forces_id
-            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
-        let integration_pipeline = fluid_pipeline.integration_id
-            .and_then(|id| pipeline_cache.get_compute_pipeline(id));
-
-        if let (
-            Some(spatial_hash_pipeline),
-            Some(calculate_offsets_pipeline),
-            Some(reorder_pipeline),
-            Some(reorder_copyback_pipeline),
-            Some(density_pressure_pipeline),
-            Some(forces_pipeline),
-            Some(integration_pipeline),
-        ) = (
-            spatial_hash_pipeline,
-            calculate_offsets_pipeline,
-            reorder_pipeline,
-            reorder_copyback_pipeline,
-            density_pressure_pipeline,
-            forces_pipeline,
-            integration_pipeline,
-        ) {
-            // Set pipelines from cache
-            fluid_pipeline.spatial_hash_pipeline = Some(spatial_hash_pipeline.clone());
-            fluid_pipeline.calculate_offsets_pipeline = Some(calculate_offsets_pipeline.clone());
-            fluid_pipeline.reorder_pipeline = Some(reorder_pipeline.clone());
-            fluid_pipeline.reorder_copyback_pipeline = Some(reorder_copyback_pipeline.clone());
-            fluid_pipeline.density_pressure_pipeline = Some(density_pressure_pipeline.clone());
-            fluid_pipeline.forces_pipeline = Some(forces_pipeline.clone());
-            fluid_pipeline.integration_pipeline = Some(integration_pipeline.clone());
-        } else {
-            // Pipelines not ready yet
-            return;
-        }
+    // Only run readback every N frames for better performance
+    let readback_frequency = 1; // Adjust based on desired performance vs smoothness
+    if gpu_results.frame_counter % readback_frequency != 0 {
+        return;
     }
-
-    // Prepare parameters for shader
-    let fluid_params = &extracted_data.params;
-    let mouse = &extracted_data.mouse;
     
-    // Calculate optimal timestep based on iterations 
-    let dt = extracted_data.dt;
-    // Don't divide by iterations here - we'll run the simulation multiple times with full dt
-    // This matches how the CPU simulation works, using the full dt each frame
-    let sub_step_dt = dt;
+    // Get the next buffer index
+    let next_index = (gpu_results.active_buffer_index + 1) % 3;
     
-    // Prepare GPU fluid params
-    let gpu_params = GpuFluidParams {
-        smoothing_radius: fluid_params.smoothing_radius,
-        target_density: fluid_params.target_density,
-        pressure_multiplier: fluid_params.pressure_multiplier,
-        near_pressure_multiplier: fluid_params.near_pressure_multiplier,
-        viscosity_strength: fluid_params.viscosity_strength,
-        boundary_dampening: 0.3, // Use constant as this field doesn't exist in FluidParams
-        particle_radius: 5.0, // Hard-coded for now
-        dt: sub_step_dt,
-        boundary_min: [fluid_params.boundary_min.x, fluid_params.boundary_min.y],
-        boundary_min_padding: [0.0, 0.0],
-        boundary_max: [fluid_params.boundary_max.x, fluid_params.boundary_max.y],
-        boundary_max_padding: [0.0, 0.0],
-        gravity: [0.0, -9.81], // Hard-coded gravity value for now
-        gravity_padding: [0.0, 0.0],
-        mouse_position: [mouse.position.x, mouse.position.y],
-        mouse_radius: mouse.radius,
-        mouse_strength: mouse.strength,
-        mouse_active: if mouse.active { 1 } else { 0 },
-        mouse_repel: if mouse.repel { 1 } else { 0 },
-        padding: [0, 0],
-    };
-
-    // Write parameters to buffer
-    if let Some(params_buffer) = &fluid_bind_group.params_buffer {
-        render_queue.write_buffer(params_buffer, 0, bytemuck::cast_slice(&[gpu_params]));
+    // Initialize the buffer if needed
+    if gpu_results.readback_buffers[next_index].is_none() {
+        // Create a new buffer for GPU readback
+        let buffer_size = fluid_bind_group.num_particles as usize * std::mem::size_of::<GpuParticle>();
+        let buffer = render_device.create_buffer(&bevy::render::render_resource::BufferDescriptor {
+            label: Some("Particle Readback Buffer"),
+            size: buffer_size as u64,
+            usage: bevy::render::render_resource::BufferUsages::COPY_DST | bevy::render::render_resource::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        gpu_results.readback_buffers[next_index] = Some(buffer);
     }
-
-    // Calculate optimal workgroup size to match Unity's implementation
-    let workgroup_size = 64; // Match Unity's approach of using 64 threads per workgroup
-    let num_workgroups = (extracted_data.num_particles as u32 + workgroup_size - 1) / workgroup_size;
-
-    // Use empty compute pass descriptor
-    let compute_pass_descriptor = bevy::render::render_resource::ComputePassDescriptor {
-        label: None,
-        timestamp_writes: None,
-    };
-
-    if let (
-        Some(spatial_hash_pipeline),
-        Some(calculate_offsets_pipeline),
-        Some(reorder_pipeline),
-        Some(reorder_copyback_pipeline),
-        Some(density_pressure_pipeline),
-        Some(forces_pipeline),
-        Some(integration_pipeline),
-        Some(bind_group),
-    ) = (
-        &fluid_pipeline.spatial_hash_pipeline,
-        &fluid_pipeline.calculate_offsets_pipeline,
-        &fluid_pipeline.reorder_pipeline,
-        &fluid_pipeline.reorder_copyback_pipeline,
-        &fluid_pipeline.density_pressure_pipeline,
-        &fluid_pipeline.forces_pipeline,
-        &fluid_pipeline.integration_pipeline,
-        &fluid_bind_group.bind_group,
-    ) {
-        // Get number of iterations to perform
-        let iterations = perf_stats.iterations_per_frame as usize;
+    
+    // Copy from GPU to our readback buffer
+    if let Some(buffer) = &gpu_results.readback_buffers[next_index] {
+        // Initialize compute pass to prepare final particles state
+        let mut encoder = render_device.create_command_encoder(&bevy::render::render_resource::CommandEncoderDescriptor {
+            label: Some("Fluid Readback Encoder"),
+        });
         
-        // Process physics multiple times per frame for better stability
-        for _ in 0..iterations {
-            // Create a new command encoder for each iteration
-            let mut command_encoder = render_device.create_command_encoder(&bevy::render::render_resource::CommandEncoderDescriptor {
-                label: Some("fluid_simulation_pass_1"),
-            });
-            
-            {
-                // 1. Spatial hash pass
-                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
-                pass.set_pipeline(spatial_hash_pipeline);
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(num_workgroups, 1, 1);
-            }
-
-            {
-                // 2. Calculate offsets pass
-                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
-                pass.set_pipeline(calculate_offsets_pipeline);
-                pass.set_bind_group(0, bind_group, &[]);
-                // This needs to consider all keys so it stays with full dispatch size
-                pass.dispatch_workgroups(num_workgroups, 1, 1);
-            }
-
-            {
-                // 3. Reorder pass
-                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
-                pass.set_pipeline(reorder_pipeline);
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(num_workgroups, 1, 1);
-            }
-
-            {
-                // 4. Reorder copy back pass
-                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
-                pass.set_pipeline(reorder_copyback_pipeline);
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(num_workgroups, 1, 1);
-            }
-
-            // Submit this set of operations and create a new encoder for the next phase
-            render_queue.submit(std::iter::once(command_encoder.finish()));
-            let mut command_encoder = render_device.create_command_encoder(&bevy::render::render_resource::CommandEncoderDescriptor {
-                label: Some("fluid_simulation_pass_2"),
-            });
-
-            {
-                // 5. Density and pressure calculation
-                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
-                pass.set_pipeline(density_pressure_pipeline);
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(num_workgroups, 1, 1);
-            }
-
-            // Submit and create new encoder for next phase
-            render_queue.submit(std::iter::once(command_encoder.finish()));
-            let mut command_encoder = render_device.create_command_encoder(&bevy::render::render_resource::CommandEncoderDescriptor {
-                label: Some("fluid_simulation_pass_3"),
-            });
-
-            {
-                // 6. Force calculation
-                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
-                pass.set_pipeline(forces_pipeline);
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(num_workgroups, 1, 1);
-            }
-
-            {
-                // 7. Final integration and collision
-                let mut pass = command_encoder.begin_compute_pass(&compute_pass_descriptor);
-                pass.set_pipeline(integration_pipeline);
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.dispatch_workgroups(num_workgroups, 1, 1);
-            }
-
-            // Submit final encoder for this iteration
-            render_queue.submit(std::iter::once(command_encoder.finish()));
-        }
-    } else {
-        // Error - this shouldn't happen
-        gpu_state.error_count += 1;
-        gpu_state.last_error = Some("Failed to get compute pipelines or bind group.".to_string());
-    }
-
-    // After simulation is complete, schedule a readback of results
-    // Only schedule readbacks every other frame to reduce overhead
-    // Use extracted_data.dt to create a timer-like behavior (approximately 30Hz readbacks)
-    static mut READBACK_TIMER: f32 = 0.0;
-    unsafe {
-        READBACK_TIMER += extracted_data.dt;
+        // Copy from particle buffer to our readback buffer
+        encoder.copy_buffer_to_buffer(
+            fluid_bind_group.particle_buffer.as_ref().unwrap(),
+            0,
+            buffer,
+            0,
+            (fluid_bind_group.num_particles as usize * std::mem::size_of::<GpuParticle>()) as u64,
+        );
         
-        // Only do readback approximately 30 times per second (every ~33ms)
-        if READBACK_TIMER >= 0.033 && !gpu_results.readback_scheduled && gpu_results.readback_buffer.is_some() {
-            READBACK_TIMER = 0.0;
-            
-            // In Bevy 0.16, we need to use the render queue to copy data
-            if let (Some(particle_buffer), Some(readback_buffer)) = 
-                (&fluid_bind_group.particle_buffer, &gpu_results.readback_buffer) {
-                
-                // Create a command encoder for the copy operation
-                let mut encoder = render_device.create_command_encoder(&Default::default());
-                
-                // Copy from particle buffer to readback buffer
-                let size = (std::mem::size_of::<GpuParticle>() * extracted_data.num_particles) as u64;
-                encoder.copy_buffer_to_buffer(particle_buffer, 0, readback_buffer, 0, size);
-                
-                // Submit the copy command
-                render_queue.submit(std::iter::once(encoder.finish()));
-                
-                // In Bevy 0.16, map_buffer requires a callback
-                let buffer_slice = readback_buffer.slice(..);
-                
-                // Define a callback that does nothing - we'll check for mapping in handle_buffer_readbacks
-                let callback = move |_: Result<(), bevy::render::render_resource::BufferAsyncError>| {
-                    // This is a no-op callback since we'll check mapping status later
-                };
-                
-                // Start buffer mapping
-                render_device.map_buffer(&buffer_slice, bevy::render::render_resource::MapMode::Read, callback);
-                
-                // Mark readback as scheduled
-                gpu_results.readback_scheduled = true;
-                gpu_results.buffer_mapped = true;
-                
-                // Only poll if absolutely necessary - polling can be expensive
-                // render_device.poll(bevy::render::render_resource::Maintain::Wait);
-                
-                // Log readback for debugging
-                if gpu_results.debug_log {
-                    info!("Scheduled GPU->CPU readback for {} particles", extracted_data.num_particles);
-                }
-            }
-        }
+        // Submit the command to copy data
+        render_queue.submit(std::iter::once(encoder.finish()));
+        
+        // Mark that we've scheduled a readback
+        gpu_results.readback_scheduled = true;
+        gpu_results.active_buffer_index = next_index;
     }
 }
 
-// Handle buffer readbacks from GPU to main world
+// Handle buffer readbacks from GPU to main world - optimized with triple buffering
 fn handle_buffer_readbacks(
-    render_device: Res<RenderDevice>,
+    _render_device: Res<RenderDevice>,
     mut gpu_results: ResMut<GpuResultsBuffer>,
     mut commands: Commands,
+    _render_queue: Res<RenderQueue>,
     fluid_bind_group: Res<FluidBindGroup>,
+    _time: Res<Time>,
 ) {
-    // Skip if no readback is scheduled or buffer unavailable
-    if !gpu_results.readback_scheduled || gpu_results.readback_buffer.is_none() {
+    // Update frame counter to manage readback frequency
+    gpu_results.frame_counter = gpu_results.frame_counter.wrapping_add(1);
+    
+    // Skip if no readback is scheduled or buffers unavailable
+    if !gpu_results.readback_scheduled || gpu_results.readback_buffers[gpu_results.active_buffer_index].is_none() {
         return;
     }
     
-    // First clone/get what we need to avoid borrow issues
-    let buffer = gpu_results.readback_buffer.clone().unwrap();
+    // Store values we need to avoid borrowing issues
+    let active_buffer_index = gpu_results.active_buffer_index;
+    let active_buffer = gpu_results.readback_buffers[active_buffer_index].clone().unwrap();
+    let particles_copy = std::mem::take(&mut gpu_results.gpu_data);
     let particle_count = fluid_bind_group.num_particles as usize;
-    let buffer_mapped = gpu_results.buffer_mapped;
     let debug_log = gpu_results.debug_log;
     
-    // Poll the device to check for completed operations (non-blocking poll)
-    render_device.poll(bevy::render::render_resource::Maintain::Poll);
+    // Poll the active buffer - non-blocking
+    let buffer_slice = active_buffer.slice(..);
     
-    // Bevy 0.16 doesn't have a direct way to check if a buffer is mapped
-    // We'll use our own tracking in gpu_results.buffer_mapped
-    
-    // If the buffer is mapped (we assume it is if our tracking says so), try to read its data
-    if buffer_mapped {
-        // Get the buffer size and create a slice
-        let buffer_slice = buffer.slice(..);
-        
-        // Try to get the mapped range safely
-        // In Bevy 0.16/wgpu 0.19.1, this function will panic if the buffer isn't mapped
-        // We'll use a safer approach
-        let maybe_data = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            buffer_slice.get_mapped_range()
-        }));
-        
-        if let Ok(data) = maybe_data {
-            // Convert the raw bytes to GpuParticle structs
-            let particles = bytemuck::cast_slice::<u8, GpuParticle>(&data);
-            
-            // Only allocate new vectors if we need to (optimization)
-            let mut positions = Vec::with_capacity(particles.len());
-            let mut velocities = Vec::with_capacity(particles.len());
-            let mut densities = Vec::with_capacity(particles.len());
-            let mut pressures = Vec::with_capacity(particles.len());
-            let mut near_densities = Vec::with_capacity(particles.len());
-            let mut near_pressures = Vec::with_capacity(particles.len());
-            
-            // Extract particle data more efficiently by reducing function calls
-            // This tight loop is faster than individual function calls 
-            for particle in particles.iter() {
-                positions.push(Vec2::new(particle.position[0], particle.position[1]));
-                velocities.push(Vec2::new(particle.velocity[0], particle.velocity[1]));
-                densities.push(particle.density);
-                pressures.push(particle.pressure);
-                near_densities.push(particle.near_density);
-                near_pressures.push(particle.near_pressure);
+    // If we already started mapping, check if it's ready
+    if gpu_results.is_mapped {
+        // Get the mapped buffer
+        match buffer_slice.get_mapped_range().len() {
+            0 => {
+                // Mapping not complete yet, try again next frame
+                gpu_results.gpu_data = particles_copy;
+                return;
             }
-            
-            // Store a copy of the data for fallback (only if needed)
-            if gpu_results.gpu_data.is_empty() {
-                gpu_results.gpu_data = particles.to_vec();
-            } else {
-                // Update the existing data only if significantly different
-                // This reduces memory allocations
-                let should_update = particles.len() != gpu_results.gpu_data.len() ||
-                    (particles.len() > 0 && particles[0].position[0] != gpu_results.gpu_data[0].position[0]);
-                    
-                if should_update {
-                    gpu_results.gpu_data = particles.to_vec();
-                }
-            }
-            
-            // Drop the mapped range (necessary before unmapping)
-            drop(data);
-            
-            // Unmap the buffer
-            buffer.unmap();
-            
-            // Update buffer state
-            gpu_results.buffer_mapped = false;
-            
-            // Get the position count for logging before we move it
-            let positions_count = positions.len();
+            _ => {
+                // Mapping complete, process the data
+                let buffer_range = buffer_slice.get_mapped_range();
+                let particle_bytes = bytemuck::cast_slice(&buffer_range);
 
-            // Pass the data to the main world for rendering
-            commands.insert_resource(GpuParticles {
-                positions,
-                velocities,
-                densities,
-                pressures,
-                near_densities,
-                near_pressures,
-                updated: true,
-                particle_count,
-            });
-            
-            if debug_log {
-                info!("Successfully read {} particles from GPU", positions_count);
-            }
-        } else {
-            // Buffer mapping failed or isn't ready - use fallback data
-            if !gpu_results.gpu_data.is_empty() {
-                // Use the cached data as fallback
-                let cached_data = &gpu_results.gpu_data;
-                let particle_count = cached_data.len();
-                
-                // Reuse the existing data without creating new allocations when possible
+                // Create new collections
                 let mut positions = Vec::with_capacity(particle_count);
                 let mut velocities = Vec::with_capacity(particle_count);
                 let mut densities = Vec::with_capacity(particle_count);
@@ -1059,8 +796,13 @@ fn handle_buffer_readbacks(
                 let mut near_densities = Vec::with_capacity(particle_count);
                 let mut near_pressures = Vec::with_capacity(particle_count);
                 
-                // Extract particle data from previous read (efficient tight loop)
-                for particle in cached_data {
+                // Use a temporary variable to store particles
+                let particles = bytemuck::cast_slice::<u8, GpuParticle>(particle_bytes);
+                let mut particles_copy = Vec::with_capacity(particles.len());
+                particles_copy.extend_from_slice(particles);
+                
+                // Extract data from GPU particles
+                for particle in &particles_copy {
                     positions.push(Vec2::new(particle.position[0], particle.position[1]));
                     velocities.push(Vec2::new(particle.velocity[0], particle.velocity[1]));
                     densities.push(particle.density);
@@ -1069,10 +811,10 @@ fn handle_buffer_readbacks(
                     near_pressures.push(particle.near_pressure);
                 }
                 
-                // Get the actual size before moving
-                let positions_count = positions.len();
+                // Get count for logging
+                let particle_count_processed = positions.len();
                 
-                // Pass the cached data to the main world
+                // Submit data to the main world
                 commands.insert_resource(GpuParticles {
                     positions,
                     velocities,
@@ -1084,33 +826,37 @@ fn handle_buffer_readbacks(
                     particle_count,
                 });
                 
-                if debug_log {
-                    info!("Using cached data for {} particles until mapping completes", positions_count);
+                // Finish working with this buffer
+                drop(buffer_range);
+                active_buffer.unmap();
+                
+                // Capture timing data
+                if let Some(last_time) = gpu_results.last_readback_time {
+                    let elapsed = last_time.elapsed();
+                    if debug_log {
+                        info!("GPU readback completed: {}/{} particles, took {:?}", 
+                              particle_count_processed, particle_count, elapsed);
+                    }
                 }
+                gpu_results.last_readback_time = Some(std::time::Instant::now());
+                
+                // Reset the readback flags
+                gpu_results.readback_scheduled = false;
+                gpu_results.is_mapped = false;
+                
+                // Rotate to the next buffer
+                gpu_results.active_buffer_index = (gpu_results.active_buffer_index + 1) % 3;
+                
+                // Store the particles for reuse
+                gpu_results.gpu_data = particles_copy;
             }
         }
     } else {
-        // Buffer not mapped yet - try initiating a mapping
-        let buffer_slice = buffer.slice(..);
-        
-        // Map the buffer - In Bevy 0.16, map_buffer requires a callback
-        let callback = move |result: Result<(), bevy::render::render_resource::BufferAsyncError>| {
-            if result.is_err() {
-                error!("Failed to map buffer for reading");
-            }
-        };
-        
-        // Start buffer mapping
-        render_device.map_buffer(&buffer_slice, bevy::render::render_resource::MapMode::Read, callback);
-        
-        // Mark the buffer as mapped
-        gpu_results.buffer_mapped = true;
-        
-        // Use the fallback in sync_gpu_to_cpu_particles for this frame
+        // Start mapping this buffer
+        buffer_slice.map_async(bevy::render::render_resource::MapMode::Read, |_| {});
+        gpu_results.is_mapped = true;
+        gpu_results.gpu_data = particles_copy;
     }
-    
-    // Reset readback state
-    gpu_results.readback_scheduled = false;
 }
 
 // Sync GPU particle data back to CPU entities

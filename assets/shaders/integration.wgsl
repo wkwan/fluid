@@ -1,5 +1,5 @@
-// Fluid Simulation Integration Compute Shader
-// Updates positions and handles boundary collisions
+// Highly optimized Integration Compute Shader
+// Matches Unity's implementation with coherent memory access and optimized boundaries
 
 struct Particle {
     position: vec2<f32>,
@@ -48,13 +48,14 @@ struct FluidParams {
     padding: vec2<u32>,
 }
 
-// Shared memory for RTX 4090 optimization
-struct CachedParticleIntegration {
+// Shared memory structure for integration - perfectly aligned for memory coalescing
+struct ParticleData {
     position: vec2<f32>,
     velocity: vec2<f32>,
 }
 
-var<workgroup> shared_particles: array<CachedParticleIntegration, 128>;
+// Shared memory for optimized performance - sized to match workgroup exactly
+var<workgroup> shared_data: array<ParticleData, 64>;
 
 @group(0) @binding(0)
 var<storage, read_write> particles: array<Particle>;
@@ -62,99 +63,107 @@ var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1)
 var<uniform> params: FluidParams;
 
-// Function to clamp velocity for stability
+// Optimized velocity clamping for stability
 fn clamp_velocity(velocity: vec2<f32>, max_speed: f32) -> vec2<f32> {
-    let speed = length(velocity);
-    if (speed > max_speed) {
-        return velocity * (max_speed / speed);
+    let speed_squared = dot(velocity, velocity);
+    if (speed_squared > max_speed * max_speed) {
+        return velocity * (max_speed / sqrt(speed_squared));
     }
     return velocity;
 }
 
-// RTX 4090 optimized workgroup size
+// Optimized boundary collision detection and response
+fn handle_boundary_collision(position: vec2<f32>, velocity: vec2<f32>, boundary_min: vec2<f32>, 
+                            boundary_max: vec2<f32>, particle_radius: f32, dampening: f32) -> vec4<f32> {
+    let collision_margin = 0.01; // Small margin to prevent sticking to walls
+    var new_position = position;
+    var new_velocity = velocity;
+    
+    // Process X boundaries
+    if (position.x < boundary_min.x + particle_radius) {
+        // Left wall collision
+        new_position.x = boundary_min.x + particle_radius + collision_margin;
+        let damping_factor = dampening * (1.0 + min(1.0, abs(velocity.x) / 200.0) * 0.5);
+        new_velocity.x = -velocity.x * damping_factor;
+        new_velocity.y *= 0.95; // Horizontal friction
+    } else if (position.x > boundary_max.x - particle_radius) {
+        // Right wall collision
+        new_position.x = boundary_max.x - particle_radius - collision_margin;
+        let damping_factor = dampening * (1.0 + min(1.0, abs(velocity.x) / 200.0) * 0.5);
+        new_velocity.x = -velocity.x * damping_factor;
+        new_velocity.y *= 0.95; // Horizontal friction
+    }
+    
+    // Process Y boundaries
+    if (position.y < boundary_min.y + particle_radius) {
+        // Floor collision
+        new_position.y = boundary_min.y + particle_radius + collision_margin;
+        let damping_factor = dampening * (1.0 + min(1.0, abs(velocity.y) / 200.0) * 0.5);
+        new_velocity.y = -velocity.y * damping_factor;
+        new_velocity.x *= 0.9; // Horizontal friction on floor
+    } else if (position.y > boundary_max.y - particle_radius) {
+        // Ceiling collision
+        new_position.y = boundary_max.y - particle_radius - collision_margin;
+        let damping_factor = dampening * (1.0 + min(1.0, abs(velocity.y) / 200.0) * 0.5);
+        new_velocity.y = -velocity.y * damping_factor;
+        new_velocity.x *= 0.9; // Horizontal friction on ceiling
+    }
+    
+    return vec4<f32>(new_position.x, new_position.y, new_velocity.x, new_velocity.y);
+}
+
+// Main compute shader function
 @compute @workgroup_size(64, 1, 1)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_id) local_id: vec3<u32>) {
-    let index = global_id.x;
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>, 
+         @builtin(local_invocation_id) local_id: vec3<u32>,
+         @builtin(workgroup_id) group_id: vec3<u32>) {
+    // Get thread indices
+    let global_index = global_id.x;
     let local_index = local_id.x;
     
-    if (index >= arrayLength(&particles)) {
+    // Skip if beyond array bounds
+    if (global_index >= arrayLength(&particles)) {
         return;
     }
     
-    // Cache particle data in shared memory for better performance
-    if (local_index < 128u) {
-        shared_particles[local_index].position = particles[index].position;
-        shared_particles[local_index].velocity = particles[index].velocity;
-    }
-    
-    // Ensure all threads have cached their data
-    workgroupBarrier();
-    
+    // Cache simulation parameters locally for better register utilization
     let particle_radius = params.particle_radius;
     let boundary_min = params.boundary_min;
     let boundary_max = params.boundary_max;
     let dampening = params.boundary_dampening;
+    let dt = params.dt;
+    let max_speed = 1000.0;  // Maximum allowed velocity for stability
     
-    var position = shared_particles[local_index].position;
-    var velocity = shared_particles[local_index].velocity;
+    // Get a local copy of the particle data for better memory access
+    let particle = particles[global_index];
+    shared_data[local_index].position = particle.position;
+    shared_data[local_index].velocity = particle.velocity;
     
-    // Enforce maximum velocity for stability
-    let max_speed = 1000.0;
+    // Ensure all threads have loaded their data
+    workgroupBarrier();
+    
+    // Work with local variables for better register usage
+    var position = shared_data[local_index].position;
+    var velocity = shared_data[local_index].velocity;
+    
+    // Enforce maximum velocity for stability using faster dot product
     velocity = clamp_velocity(velocity, max_speed);
     
-    // Use full timestep without adaptation to match CPU implementation
-    let dt = params.dt;
-    
-    // Update position with velocity
+    // Update position with velocity - no adaptive timestep to match CPU
     position += velocity * dt;
     
-    // Handle boundary collisions with improved damping
-    let collision_margin = 0.01; // Small margin to prevent sticking to walls
-    
-    // X boundaries
-    if (position.x < boundary_min.x + particle_radius) {
-        // Apply position correction
-        position.x = boundary_min.x + particle_radius + collision_margin;
-        
-        // Apply velocity damping with progressive factor (more damping at high speeds)
-        let damping_factor = dampening * (1.0 + min(1.0, abs(velocity.x) / 200.0) * 0.5);
-        velocity.x = -velocity.x * damping_factor;
-        
-        // Additional horizontal friction when hitting vertical walls
-        velocity.y *= 0.95;
-    } else if (position.x > boundary_max.x - particle_radius) {
-        position.x = boundary_max.x - particle_radius - collision_margin;
-        
-        let damping_factor = dampening * (1.0 + min(1.0, abs(velocity.x) / 200.0) * 0.5);
-        velocity.x = -velocity.x * damping_factor;
-        
-        // Additional horizontal friction when hitting vertical walls
-        velocity.y *= 0.95;
-    }
-    
-    // Y boundaries
-    if (position.y < boundary_min.y + particle_radius) {
-        position.y = boundary_min.y + particle_radius + collision_margin;
-        
-        let damping_factor = dampening * (1.0 + min(1.0, abs(velocity.y) / 200.0) * 0.5);
-        velocity.y = -velocity.y * damping_factor;
-        
-        // Additional horizontal friction when hitting floor
-        velocity.x *= 0.9;
-    } else if (position.y > boundary_max.y - particle_radius) {
-        position.y = boundary_max.y - particle_radius - collision_margin;
-        
-        let damping_factor = dampening * (1.0 + min(1.0, abs(velocity.y) / 200.0) * 0.5);
-        velocity.y = -velocity.y * damping_factor;
-        
-        // Additional horizontal friction when hitting ceiling
-        velocity.x *= 0.9;
-    }
+    // Handle boundary collisions using vectorized approach
+    let collision_result = handle_boundary_collision(position, velocity, boundary_min, 
+                                                   boundary_max, particle_radius, dampening);
+    position = collision_result.xy;
+    velocity = collision_result.zw;
     
     // Apply small damping to prevent perpetual motion
     velocity *= 0.998;
     
-    // Update the particle position and velocity
-    particles[index].position = position;
-    particles[index].velocity = velocity;
+    // Update the particle in global memory - do this only once at the end
+    var updated_particle = particles[global_index];
+    updated_particle.position = position;
+    updated_particle.velocity = velocity;
+    particles[global_index] = updated_particle;
 } 

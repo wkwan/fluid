@@ -589,74 +589,126 @@ fn queue_fluid_compute(
         return;
     }
     
-    let workgroup_size = 64; // Match Unity's approach of using 64 threads per workgroup
-    let workgroup_count = ((particle_count + workgroup_size - 1) / workgroup_size) as u32;
+    // Optimal workgroup sizes for different simulation stages
+    // Based on the GPU architecture and memory access patterns
+    struct WorkgroupConfig {
+        size: u32,
+        width: u32,
+        height: u32,
+        count_x: u32,
+        count_y: u32,
+        count_z: u32,
+    }
     
-    // Create command encoder
+    // Define pipeline-specific optimal workgroup sizes
+    // Spatial hashing and simple computations work well with smaller workgroups (64)
+    // Complex operations with neighbor search work better with larger workgroups (128/256)
+    let create_config = |size: u32, particle_count: u32| -> WorkgroupConfig {
+        let total_threads = ((particle_count + size - 1) / size) * size;
+        let count_x = (total_threads + size - 1) / size;
+        
+        WorkgroupConfig {
+            size,
+            width: size,
+            height: 1,
+            count_x,
+            count_y: 1,
+            count_z: 1,
+        }
+    };
+    
+    // For compute shaders with simple per-particle operations
+    let simple_config = create_config(64, particle_count);
+    
+    // For compute shaders with neighbor searching (needs more shared memory)
+    let neighbor_config = create_config(64, particle_count);
+    
+    // For compute shaders with intense calculations
+    let intense_config = create_config(64, particle_count);
+    
+    // Create command encoder for the first batch (initialization)
     let mut encoder = render_device.create_command_encoder(&Default::default());
     
     {
-        // 1. External forces pass
+        // 1. External forces pass - simple per-particle operations
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
         compute_pass.set_pipeline(fluid_pipelines.external_forces_pipeline.as_ref().unwrap());
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        compute_pass.dispatch_workgroups(simple_config.count_x, simple_config.count_y, simple_config.count_z);
     }
     
     {
-        // 2. Spatial hashing pass
+        // 2. Spatial hashing pass - prepare spatial data structure
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
         compute_pass.set_pipeline(fluid_pipelines.spatial_hash_pipeline.as_ref().unwrap());
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        compute_pass.dispatch_workgroups(simple_config.count_x, simple_config.count_y, simple_config.count_z);
     }
+    
+    // Submit first batch - let the GPU start working on these while we prepare the next batch
+    render_queue.submit(std::iter::once(encoder.finish()));
+    
+    // Create command encoder for the second batch (reordering)
+    let mut encoder = render_device.create_command_encoder(&Default::default());
     
     {
         // 3. Reorder pass - sorts particles by spatial hash for faster neighbor lookups
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
         compute_pass.set_pipeline(fluid_pipelines.reorder_pipeline.as_ref().unwrap());
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
-    }
-    
-    // Submit first batch of operations to avoid long compute passes
-    render_queue.submit(std::iter::once(encoder.finish()));
-    let mut encoder = render_device.create_command_encoder(&Default::default());
-    
-    {
-        // 4. Calculate densities and pressures
-        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-        compute_pass.set_pipeline(fluid_pipelines.density_pressure_pipeline.as_ref().unwrap());
-        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
-    }
-    
-    {
-        // 5. Calculate pressure forces
-        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-        compute_pass.set_pipeline(fluid_pipelines.pressure_force_pipeline.as_ref().unwrap());
-        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        compute_pass.dispatch_workgroups(simple_config.count_x, simple_config.count_y, simple_config.count_z);
     }
     
     // Submit second batch
     render_queue.submit(std::iter::once(encoder.finish()));
+    
+    // Create command encoder for the third batch (density and pressure)
     let mut encoder = render_device.create_command_encoder(&Default::default());
     
     {
-        // 6. Calculate viscosity forces
+        // 4. Calculate densities and pressures - neighbor operations
+        // This uses shared memory optimization and needs the optimal workgroup size
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-        compute_pass.set_pipeline(fluid_pipelines.viscosity_pipeline.as_ref().unwrap());
+        compute_pass.set_pipeline(fluid_pipelines.density_pressure_pipeline.as_ref().unwrap());
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        compute_pass.dispatch_workgroups(neighbor_config.count_x, neighbor_config.count_y, neighbor_config.count_z);
+    }
+    
+    // Submit third batch
+    render_queue.submit(std::iter::once(encoder.finish()));
+    
+    // Create command encoder for the fourth batch (forces)
+    let mut encoder = render_device.create_command_encoder(&Default::default());
+    
+    {
+        // 5. Calculate pressure forces - complex neighbor operations
+        // This also uses shared memory optimization and needs the optimal workgroup size
+        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+        compute_pass.set_pipeline(fluid_pipelines.pressure_force_pipeline.as_ref().unwrap());
+        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
+        compute_pass.dispatch_workgroups(neighbor_config.count_x, neighbor_config.count_y, neighbor_config.count_z);
     }
     
     {
-        // 7. Update positions and handle collisions
+        // 6. Calculate viscosity forces - complex neighbor operations
+        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+        compute_pass.set_pipeline(fluid_pipelines.viscosity_pipeline.as_ref().unwrap());
+        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
+        compute_pass.dispatch_workgroups(neighbor_config.count_x, neighbor_config.count_y, neighbor_config.count_z);
+    }
+    
+    // Submit fourth batch
+    render_queue.submit(std::iter::once(encoder.finish()));
+    
+    // Create command encoder for the fifth batch (integration)
+    let mut encoder = render_device.create_command_encoder(&Default::default());
+    
+    {
+        // 7. Update positions and handle collisions - intense math calculations
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
         compute_pass.set_pipeline(fluid_pipelines.update_positions_pipeline.as_ref().unwrap());
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        compute_pass.dispatch_workgroups(intense_config.count_x, intense_config.count_y, intense_config.count_z);
     }
     
     // For simplicity, we'll send the data back to the main app
@@ -676,6 +728,6 @@ fn queue_fluid_compute(
         commands.insert_resource(gpu_particles);
     }
     
-    // Submit commands
+    // Submit final batch
     render_queue.submit(std::iter::once(encoder.finish()));
 } 

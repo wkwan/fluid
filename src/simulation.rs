@@ -16,7 +16,7 @@ impl Default for ColorMapParams {
     fn default() -> Self {
         Self {
             min_speed: 0.0,
-            max_speed: 500.0,
+            max_speed: 300.0,
             use_velocity_color: true,
         }
     }

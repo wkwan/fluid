@@ -2,89 +2,165 @@ use bevy::{
     prelude::*,
     render::{
         render_resource::{
-            BufferUsages, BufferInitDescriptor, BindGroupLayoutEntry, BindingType,
-            BufferBindingType, ShaderStages, Buffer, BindGroup, BindGroupLayoutDescriptor,
-            BindGroupDescriptor, BindGroupEntry,
+            BufferUsages, BufferInitDescriptor, Buffer,
         },
-        renderer::RenderDevice,
+        renderer::{RenderDevice, RenderQueue},
     },
 };
 use bytemuck::{Pod, Zeroable};
+use crate::simulation::Particle;
 
-#[derive(Resource)]
-pub struct ParticleRenderResources {
-    pub instance_buffer: Option<Buffer>,
-    pub args_buffer: Option<Buffer>,
-    pub bind_group: Option<BindGroup>,
+// Custom instance data for batched rendering
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct ParticleInstance {
+    position: [f32; 2],
+    scale: f32,
+    color: [f32; 4],
 }
 
-impl Default for ParticleRenderResources {
+// Resource for cached instance data
+#[derive(Resource)]
+struct InstanceBuffer {
+    buffer: Option<Buffer>,
+    capacity: usize,
+    last_count: usize,
+    needs_update: bool,
+}
+
+impl Default for InstanceBuffer {
     fn default() -> Self {
         Self {
-            instance_buffer: None,
-            args_buffer: None,
-            bind_group: None,
+            buffer: None,
+            capacity: 0,
+            last_count: 0,
+            needs_update: true,
         }
     }
 }
 
-pub fn create_particle_render_resources(
-    render_device: &RenderDevice,
-    particle_count: u32,
-) -> ParticleRenderResources {
-    // Create instance buffer for particle data
-    let instance_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("particle_instance_buffer"),
-        contents: &vec![0u8; (particle_count as usize * std::mem::size_of::<ParticleInstance>())],
-        usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-    });
+// Resource to control color mapping
+#[derive(Resource, Clone)]
+pub struct ColorMapParams {
+    pub use_velocity_color: bool,
+    pub min_speed: f32,
+    pub max_speed: f32,
+}
 
-    // Create indirect args buffer
-    let args = [6u32, particle_count, 0, 0, 0]; // 6 vertices per quad, particle_count instances
-    let args_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("particle_args_buffer"),
-        contents: bytemuck::cast_slice(&args),
-        usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST,
-    });
-
-    // Create bind group layout
-    let bind_group_layout = render_device.create_bind_group_layout(
-        "particle_bind_group_layout",
-        &[
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    );
-
-    // Create bind group
-    let bind_group = render_device.create_bind_group(
-        "particle_bind_group",
-        &bind_group_layout,
-        &[BindGroupEntry {
-            binding: 0,
-            resource: instance_buffer.as_entire_binding(),
-        }],
-    );
-
-    ParticleRenderResources {
-        instance_buffer: Some(instance_buffer),
-        args_buffer: Some(args_buffer),
-        bind_group: Some(bind_group),
+impl Default for ColorMapParams {
+    fn default() -> Self {
+        Self {
+            use_velocity_color: true,
+            min_speed: 0.0,
+            max_speed: 500.0,
+        }
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct ParticleInstance {
-    position: [f32; 3],
-    scale: f32,
-    color: [f32; 4],
+// Component to mark the particle material
+#[derive(Component)]
+struct ParticleMaterial;
+
+pub struct RenderPlugin;
+
+impl Plugin for RenderPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<InstanceBuffer>()
+           .init_resource::<ColorMapParams>()
+           .add_systems(Startup, setup_particle_rendering)
+           .add_systems(Update, update_particle_instances);
+    }
+}
+
+fn velocity_to_color(velocity: Vec2, min_speed: f32, max_speed: f32) -> Color {
+    let speed = velocity.length();
+    let normalized = ((speed - min_speed) / (max_speed - min_speed)).clamp(0.0, 1.0);
+    
+    // Use a blue-green-red gradient based on speed
+    if normalized < 0.5 {
+        // Blue to green
+        let local_norm = normalized * 2.0;
+        Color::srgb(
+            0.0,
+            local_norm,
+            1.0 - local_norm,
+        )
+    } else {
+        // Green to red
+        let local_norm = (normalized - 0.5) * 2.0;
+        Color::srgb(
+            local_norm,
+            1.0 - local_norm,
+            0.0,
+        )
+    }
+}
+
+fn setup_particle_rendering(
+    mut commands: Commands,
+) {
+    // Just create an entity to mark our particle system
+    commands.spawn(ParticleMaterial);
+}
+
+// Update particle instances in a batch for better performance
+fn update_particle_instances(
+    particles: Query<(&Transform, &Particle)>,
+    color_params: Res<ColorMapParams>,
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    mut instance_buffer: ResMut<InstanceBuffer>,
+) {
+    let particle_count = particles.iter().count();
+    
+    // Skip if no particles
+    if particle_count == 0 {
+        return;
+    }
+    
+    // Create or resize buffer if needed
+    if instance_buffer.buffer.is_none() || particle_count > instance_buffer.capacity {
+        // Calculate a new capacity with 20% headroom to avoid frequent resizing
+        let new_capacity = (particle_count * 6 / 5).max(1000);
+        
+        // Create the instance buffer
+        let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("particle_instance_buffer"),
+            contents: &vec![0u8; new_capacity * std::mem::size_of::<ParticleInstance>()],
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+        });
+        
+        instance_buffer.buffer = Some(buffer);
+        instance_buffer.capacity = new_capacity;
+        instance_buffer.needs_update = true;
+    }
+    
+    // Only update when particle count changes or explicitly requested
+    if particle_count == instance_buffer.last_count && !instance_buffer.needs_update {
+        return;
+    }
+    
+    // Create instance data for all particles
+    let mut instances = Vec::with_capacity(particle_count);
+    
+    for (transform, particle) in particles.iter() {
+        let position = transform.translation.truncate();
+        
+        // Skip color calculation since we can't get components - just use fixed colors
+        
+        instances.push(ParticleInstance {
+            position: [position.x, position.y],
+            scale: 5.0,  // Particle radius
+            color: [0.5, 0.5, 1.0, 1.0], // Default blue color
+        });
+    }
+    
+    // Update the instance buffer
+    if let Some(buffer) = &instance_buffer.buffer {
+        render_queue.write_buffer(buffer, 0, bytemuck::cast_slice(&instances));
+    }
+    
+    // Update state
+    instance_buffer.last_count = particle_count;
+    instance_buffer.needs_update = false;
 } 
