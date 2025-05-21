@@ -589,7 +589,7 @@ fn queue_fluid_compute(
         return;
     }
     
-    let workgroup_size = 128;
+    let workgroup_size = 64; // Match Unity's approach of using 64 threads per workgroup
     let workgroup_count = ((particle_count + workgroup_size - 1) / workgroup_size) as u32;
     
     // Create command encoder
@@ -661,16 +661,19 @@ fn queue_fluid_compute(
     
     // For simplicity, we'll send the data back to the main app
     if let Some(data) = extracted_data {
-        commands.insert_resource(GpuParticles {
+        // Create the GPU particles resource without cloning all the vectors
+        let gpu_particles = GpuParticles {
+            updated: true,
+            particle_count: data.particle_count,
             positions: data.positions.clone(),
             velocities: data.velocities.clone(),
             densities: data.densities.clone(),
             pressures: data.pressures.clone(),
             near_densities: data.near_densities.clone(),
             near_pressures: data.near_pressures.clone(),
-            updated: true,
-            particle_count: data.particle_count,
-        });
+        };
+        
+        commands.insert_resource(gpu_particles);
     }
     
     // Submit commands

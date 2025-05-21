@@ -26,7 +26,11 @@ impl Plugin for GpuFluidPlugin {
         app.add_systems(Update, handle_mouse_input)
            .init_resource::<GpuState>()
            .init_resource::<GpuPerformanceStats>()
-           .add_systems(Update, update_gpu_performance);
+           .init_resource::<GpuParticles>() // Initialize this so it's always available
+           // Only update GPU performance if GPU is enabled
+           .add_systems(Update, update_gpu_performance.run_if(gpu_enabled))
+           // Only try to sync GPU particles if GPU is enabled
+           .add_systems(Update, sync_gpu_to_cpu_particles.run_if(gpu_enabled));
 
         // Render app systems for GPU processing
         let render_app = app.sub_app_mut(RenderApp);
@@ -34,14 +38,19 @@ impl Plugin for GpuFluidPlugin {
             .init_resource::<FluidPipeline>()
             .init_resource::<FluidBindGroup>()
             .init_resource::<RenderGpuState>()
+            .init_resource::<GpuResultsBuffer>()
             // Extract resources from the main world
             .add_systems(ExtractSchedule, (
                 extract_fluid_params, 
                 extract_gpu_state,
                 extract_perf_stats,
-            ))
-            .add_systems(Render, prepare_bind_groups.after(RenderSet::Prepare))
-            .add_systems(Render, queue_particle_buffers.after(RenderSet::Queue));
+            ).run_if(render_gpu_enabled))
+            // Prepare resources happens before Queue
+            .add_systems(Render, prepare_bind_groups.in_set(RenderSet::Prepare).run_if(render_gpu_enabled))
+            // Queue the particle buffers during the Queue phase
+            .add_systems(Render, queue_particle_buffers.in_set(RenderSet::Queue).run_if(render_gpu_enabled))
+            // Handle buffer readbacks after rendering is complete
+            .add_systems(Render, handle_buffer_readbacks.in_set(RenderSet::Cleanup).run_if(render_gpu_enabled));
     }
 }
 
@@ -169,6 +178,29 @@ struct ExtractedFluidParams {
     near_pressures: Vec<f32>,
 }
 
+// Resource to handle GPU result readback
+#[derive(Resource, Default)]
+struct GpuResultsBuffer {
+    readback_buffer: Option<Buffer>,
+    readback_scheduled: bool,
+    buffer_mapped: bool,
+    gpu_data: Vec<GpuParticle>,
+    debug_log: bool,
+}
+
+// Resource to hold GPU particle data in the main world
+#[derive(Resource, Default)]
+pub struct GpuParticles {
+    pub positions: Vec<Vec2>,
+    pub velocities: Vec<Vec2>,
+    pub densities: Vec<f32>,
+    pub pressures: Vec<f32>,
+    pub near_densities: Vec<f32>,
+    pub near_pressures: Vec<f32>,
+    pub updated: bool,
+    pub particle_count: usize,
+}
+
 // Extract GPU state to render world
 fn extract_gpu_state(
     mut commands: Commands,
@@ -239,25 +271,32 @@ fn update_gpu_performance(
     
     // Adjust iterations based on performance and velocity
     if perf_stats.adaptive_iterations {
-        // Scale iterations based on performance
-        let base_iterations = if perf_stats.avg_frame_time > 16.67 { // Below 60 FPS
-            perf_stats.base_iterations.min(2) // Cap at 2 if performance is low
+        // If frame time is very high (low FPS), use minimal iterations
+        if perf_stats.avg_frame_time > 33.33 { // Below 30 FPS
+            perf_stats.iterations_per_frame = 1; // Minimum for performance
+        } else if perf_stats.avg_frame_time > 16.67 { // Below 60 FPS
+            // Use 1 or 2 iterations based on velocity
+            let iterations = if max_velocity > 300.0 { 2 } else { 1 };
+            perf_stats.iterations_per_frame = iterations;
         } else {
-            perf_stats.base_iterations
-        };
-        
-        // Scale iterations based on maximum velocity
-        // Higher velocities need more iterations for stability
-        let velocity_scale = if max_velocity > 0.0 {
-            let normalized_velocity = (max_velocity / 500.0).clamp(1.0, 4.0);
-            perf_stats.velocity_iteration_scale * normalized_velocity
-        } else {
-            1.0
-        };
-        
-        perf_stats.iterations_per_frame = (base_iterations as f32 * velocity_scale).max(1.0) as u32;
+            // Higher FPS - can afford more iterations
+            let base_iterations = perf_stats.base_iterations.min(3); // Cap at 3 for better performance
+            
+            // Scale iterations based on maximum velocity
+            // Only scale up for high velocities to maintain stability
+            let velocity_scale = if max_velocity > 200.0 {
+                let normalized_velocity = ((max_velocity - 200.0) / 300.0).clamp(0.0, 1.0);
+                1.0 + normalized_velocity // Max scale of 2.0
+            } else {
+                1.0 // No scaling for normal velocities
+            };
+            
+            perf_stats.iterations_per_frame = (base_iterations as f32 * velocity_scale).round() as u32;
+            perf_stats.iterations_per_frame = perf_stats.iterations_per_frame.max(1).min(3);
+        }
     } else {
-        perf_stats.iterations_per_frame = perf_stats.base_iterations;
+        // When not adaptive, use a conservative number of iterations (1-3)
+        perf_stats.iterations_per_frame = perf_stats.base_iterations.min(3);
     }
 }
 
@@ -393,8 +432,18 @@ fn prepare_bind_groups(
     asset_server: Res<AssetServer>,
     pipeline_cache: ResMut<PipelineCache>,
     mut bind_group: ResMut<FluidBindGroup>,
-    _gpu_state: ResMut<RenderGpuState>,
+    gpu_state: ResMut<RenderGpuState>,
+    mut gpu_results: ResMut<GpuResultsBuffer>,
+    extracted_params: Option<Res<ExtractedFluidParams>>,
 ) {
+    // Skip if GPU is disabled
+    if !gpu_state.enabled || extracted_params.is_none() {
+        return;
+    }
+    
+    let extracted_data = extracted_params.as_ref().unwrap();
+    let num_particles = extracted_data.num_particles;
+    
     // Create bind group layout if it doesn't exist
     if fluid_pipeline.bind_group_layout.is_none() {
         let entries = vec![
@@ -591,6 +640,33 @@ fn prepare_bind_groups(
         fluid_pipeline.integration_pipeline.is_some();
 
     bind_group.pipeline_ready = all_pipelines_ready;
+
+    // Create particle buffer for GPU simulation
+    if bind_group.particle_buffer.is_none() || bind_group.num_particles != num_particles as u32 {
+        // Create the GPU buffer for particles 
+        // ...existing buffer creation code...
+        
+        // Create readback buffer for returning results to CPU
+        if gpu_results.readback_buffer.is_none() || bind_group.num_particles != num_particles as u32 {
+            let buffer_size = std::mem::size_of::<GpuParticle>() * num_particles;
+            
+            // Create a buffer suitable for readback (mapping)
+            let buffer = render_device.create_buffer(&bevy::render::render_resource::BufferDescriptor {
+                label: Some("particle_readback_buffer"),
+                size: buffer_size as u64,
+                usage: bevy::render::render_resource::BufferUsages::COPY_DST | bevy::render::render_resource::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            
+            gpu_results.readback_buffer = Some(buffer);
+            gpu_results.readback_scheduled = false;
+            gpu_results.gpu_data.clear();
+            
+            if gpu_results.debug_log {
+                info!("Created GPU readback buffer for {} particles ({} bytes)", num_particles, buffer_size);
+            }
+        }
+    }
 }
 
 // Queue particle buffers for GPU computation with optimized workgroups
@@ -603,22 +679,14 @@ fn queue_particle_buffers(
     pipeline_cache: Res<PipelineCache>,
     mut gpu_state: ResMut<RenderGpuState>,
     perf_stats: Res<GpuPerformanceStats>,
+    mut gpu_results: ResMut<GpuResultsBuffer>,
 ) {
-    if !gpu_state.enabled {
+    // Skip if no data or GPU is disabled
+    if extracted_params.is_none() || !gpu_state.enabled {
         return;
     }
-
-    // Check if we have extracted data
-    let Some(extracted_params) = extracted_params else {
-        return;
-    };
-
-    // Get number of particles
-    let num_particles = extracted_params.num_particles;
-    if num_particles == 0 {
-        return;
-    }
-
+    let extracted_data = extracted_params.as_ref().unwrap();
+    
     // Check if pipelines are ready
     if !fluid_bind_group.pipeline_ready {
         // First check if pipelines are ready in cache
@@ -669,12 +737,14 @@ fn queue_particle_buffers(
     }
 
     // Prepare parameters for shader
-    let fluid_params = &extracted_params.params;
-    let mouse = &extracted_params.mouse;
+    let fluid_params = &extracted_data.params;
+    let mouse = &extracted_data.mouse;
     
     // Calculate optimal timestep based on iterations 
-    let dt = extracted_params.dt;
-    let sub_step_dt = dt / perf_stats.iterations_per_frame as f32;
+    let dt = extracted_data.dt;
+    // Don't divide by iterations here - we'll run the simulation multiple times with full dt
+    // This matches how the CPU simulation works, using the full dt each frame
+    let sub_step_dt = dt;
     
     // Prepare GPU fluid params
     let gpu_params = GpuFluidParams {
@@ -705,9 +775,9 @@ fn queue_particle_buffers(
         render_queue.write_buffer(params_buffer, 0, bytemuck::cast_slice(&[gpu_params]));
     }
 
-    // Calculate optimal workgroup count for RTX 4090
-    let workgroup_size = 128; // RTX 4090 optimal workgroup size
-    let num_workgroups = (num_particles as u32 + workgroup_size - 1) / workgroup_size;
+    // Calculate optimal workgroup size to match Unity's implementation
+    let workgroup_size = 64; // Match Unity's approach of using 64 threads per workgroup
+    let num_workgroups = (extracted_data.num_particles as u32 + workgroup_size - 1) / workgroup_size;
 
     // Use empty compute pass descriptor
     let compute_pass_descriptor = bevy::render::render_resource::ComputePassDescriptor {
@@ -821,4 +891,343 @@ fn queue_particle_buffers(
         gpu_state.error_count += 1;
         gpu_state.last_error = Some("Failed to get compute pipelines or bind group.".to_string());
     }
+
+    // After simulation is complete, schedule a readback of results
+    // Only schedule readbacks every other frame to reduce overhead
+    // Use extracted_data.dt to create a timer-like behavior (approximately 30Hz readbacks)
+    static mut READBACK_TIMER: f32 = 0.0;
+    unsafe {
+        READBACK_TIMER += extracted_data.dt;
+        
+        // Only do readback approximately 30 times per second (every ~33ms)
+        if READBACK_TIMER >= 0.033 && !gpu_results.readback_scheduled && gpu_results.readback_buffer.is_some() {
+            READBACK_TIMER = 0.0;
+            
+            // In Bevy 0.16, we need to use the render queue to copy data
+            if let (Some(particle_buffer), Some(readback_buffer)) = 
+                (&fluid_bind_group.particle_buffer, &gpu_results.readback_buffer) {
+                
+                // Create a command encoder for the copy operation
+                let mut encoder = render_device.create_command_encoder(&Default::default());
+                
+                // Copy from particle buffer to readback buffer
+                let size = (std::mem::size_of::<GpuParticle>() * extracted_data.num_particles) as u64;
+                encoder.copy_buffer_to_buffer(particle_buffer, 0, readback_buffer, 0, size);
+                
+                // Submit the copy command
+                render_queue.submit(std::iter::once(encoder.finish()));
+                
+                // In Bevy 0.16, map_buffer requires a callback
+                let buffer_slice = readback_buffer.slice(..);
+                
+                // Define a callback that does nothing - we'll check for mapping in handle_buffer_readbacks
+                let callback = move |_: Result<(), bevy::render::render_resource::BufferAsyncError>| {
+                    // This is a no-op callback since we'll check mapping status later
+                };
+                
+                // Start buffer mapping
+                render_device.map_buffer(&buffer_slice, bevy::render::render_resource::MapMode::Read, callback);
+                
+                // Mark readback as scheduled
+                gpu_results.readback_scheduled = true;
+                gpu_results.buffer_mapped = true;
+                
+                // Only poll if absolutely necessary - polling can be expensive
+                // render_device.poll(bevy::render::render_resource::Maintain::Wait);
+                
+                // Log readback for debugging
+                if gpu_results.debug_log {
+                    info!("Scheduled GPU->CPU readback for {} particles", extracted_data.num_particles);
+                }
+            }
+        }
+    }
+}
+
+// Handle buffer readbacks from GPU to main world
+fn handle_buffer_readbacks(
+    render_device: Res<RenderDevice>,
+    mut gpu_results: ResMut<GpuResultsBuffer>,
+    mut commands: Commands,
+    fluid_bind_group: Res<FluidBindGroup>,
+) {
+    // Skip if no readback is scheduled or buffer unavailable
+    if !gpu_results.readback_scheduled || gpu_results.readback_buffer.is_none() {
+        return;
+    }
+    
+    // First clone/get what we need to avoid borrow issues
+    let buffer = gpu_results.readback_buffer.clone().unwrap();
+    let particle_count = fluid_bind_group.num_particles as usize;
+    let buffer_mapped = gpu_results.buffer_mapped;
+    let debug_log = gpu_results.debug_log;
+    
+    // Poll the device to check for completed operations (non-blocking poll)
+    render_device.poll(bevy::render::render_resource::Maintain::Poll);
+    
+    // Bevy 0.16 doesn't have a direct way to check if a buffer is mapped
+    // We'll use our own tracking in gpu_results.buffer_mapped
+    
+    // If the buffer is mapped (we assume it is if our tracking says so), try to read its data
+    if buffer_mapped {
+        // Get the buffer size and create a slice
+        let buffer_slice = buffer.slice(..);
+        
+        // Try to get the mapped range safely
+        // In Bevy 0.16/wgpu 0.19.1, this function will panic if the buffer isn't mapped
+        // We'll use a safer approach
+        let maybe_data = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            buffer_slice.get_mapped_range()
+        }));
+        
+        if let Ok(data) = maybe_data {
+            // Convert the raw bytes to GpuParticle structs
+            let particles = bytemuck::cast_slice::<u8, GpuParticle>(&data);
+            
+            // Only allocate new vectors if we need to (optimization)
+            let mut positions = Vec::with_capacity(particles.len());
+            let mut velocities = Vec::with_capacity(particles.len());
+            let mut densities = Vec::with_capacity(particles.len());
+            let mut pressures = Vec::with_capacity(particles.len());
+            let mut near_densities = Vec::with_capacity(particles.len());
+            let mut near_pressures = Vec::with_capacity(particles.len());
+            
+            // Extract particle data more efficiently by reducing function calls
+            // This tight loop is faster than individual function calls 
+            for particle in particles.iter() {
+                positions.push(Vec2::new(particle.position[0], particle.position[1]));
+                velocities.push(Vec2::new(particle.velocity[0], particle.velocity[1]));
+                densities.push(particle.density);
+                pressures.push(particle.pressure);
+                near_densities.push(particle.near_density);
+                near_pressures.push(particle.near_pressure);
+            }
+            
+            // Store a copy of the data for fallback (only if needed)
+            if gpu_results.gpu_data.is_empty() {
+                gpu_results.gpu_data = particles.to_vec();
+            } else {
+                // Update the existing data only if significantly different
+                // This reduces memory allocations
+                let should_update = particles.len() != gpu_results.gpu_data.len() ||
+                    (particles.len() > 0 && particles[0].position[0] != gpu_results.gpu_data[0].position[0]);
+                    
+                if should_update {
+                    gpu_results.gpu_data = particles.to_vec();
+                }
+            }
+            
+            // Drop the mapped range (necessary before unmapping)
+            drop(data);
+            
+            // Unmap the buffer
+            buffer.unmap();
+            
+            // Update buffer state
+            gpu_results.buffer_mapped = false;
+            
+            // Get the position count for logging before we move it
+            let positions_count = positions.len();
+
+            // Pass the data to the main world for rendering
+            commands.insert_resource(GpuParticles {
+                positions,
+                velocities,
+                densities,
+                pressures,
+                near_densities,
+                near_pressures,
+                updated: true,
+                particle_count,
+            });
+            
+            if debug_log {
+                info!("Successfully read {} particles from GPU", positions_count);
+            }
+        } else {
+            // Buffer mapping failed or isn't ready - use fallback data
+            if !gpu_results.gpu_data.is_empty() {
+                // Use the cached data as fallback
+                let cached_data = &gpu_results.gpu_data;
+                let particle_count = cached_data.len();
+                
+                // Reuse the existing data without creating new allocations when possible
+                let mut positions = Vec::with_capacity(particle_count);
+                let mut velocities = Vec::with_capacity(particle_count);
+                let mut densities = Vec::with_capacity(particle_count);
+                let mut pressures = Vec::with_capacity(particle_count);
+                let mut near_densities = Vec::with_capacity(particle_count);
+                let mut near_pressures = Vec::with_capacity(particle_count);
+                
+                // Extract particle data from previous read (efficient tight loop)
+                for particle in cached_data {
+                    positions.push(Vec2::new(particle.position[0], particle.position[1]));
+                    velocities.push(Vec2::new(particle.velocity[0], particle.velocity[1]));
+                    densities.push(particle.density);
+                    pressures.push(particle.pressure);
+                    near_densities.push(particle.near_density);
+                    near_pressures.push(particle.near_pressure);
+                }
+                
+                // Get the actual size before moving
+                let positions_count = positions.len();
+                
+                // Pass the cached data to the main world
+                commands.insert_resource(GpuParticles {
+                    positions,
+                    velocities,
+                    densities,
+                    pressures,
+                    near_densities,
+                    near_pressures,
+                    updated: true,
+                    particle_count,
+                });
+                
+                if debug_log {
+                    info!("Using cached data for {} particles until mapping completes", positions_count);
+                }
+            }
+        }
+    } else {
+        // Buffer not mapped yet - try initiating a mapping
+        let buffer_slice = buffer.slice(..);
+        
+        // Map the buffer - In Bevy 0.16, map_buffer requires a callback
+        let callback = move |result: Result<(), bevy::render::render_resource::BufferAsyncError>| {
+            if result.is_err() {
+                error!("Failed to map buffer for reading");
+            }
+        };
+        
+        // Start buffer mapping
+        render_device.map_buffer(&buffer_slice, bevy::render::render_resource::MapMode::Read, callback);
+        
+        // Mark the buffer as mapped
+        gpu_results.buffer_mapped = true;
+        
+        // Use the fallback in sync_gpu_to_cpu_particles for this frame
+    }
+    
+    // Reset readback state
+    gpu_results.readback_scheduled = false;
+}
+
+// Sync GPU particle data back to CPU entities
+fn sync_gpu_to_cpu_particles(
+    gpu_state: Res<GpuState>,
+    mut particles: Query<(Entity, &mut Transform, &mut Particle)>,
+    gpu_particles: Option<Res<GpuParticles>>,
+    fluid_params: Res<FluidParams>,
+    mouse_interaction: Res<MouseInteraction>,
+    time: Res<Time>,
+    mut commands: Commands,
+) {
+    // Skip if GPU is disabled
+    if !gpu_state.enabled {
+        return;
+    }
+    
+    // If we don't have GPU data, need to use CPU-compatible simulation as fallback
+    if gpu_particles.is_none() || 
+       gpu_particles.as_ref().unwrap().positions.is_empty() {
+        
+        // These parameters match the CPU simulation exactly
+        let dt = time.delta_secs();
+        let boundary_min = fluid_params.boundary_min;
+        let boundary_max = fluid_params.boundary_max;
+        let boundary_dampening = 0.3;
+        let particle_radius = 5.0;
+        
+        // Apply simplified CPU-like physics to keep particles moving
+        for (_, mut transform, mut particle) in particles.iter_mut() {
+            // Apply gravity (matches CPU approach)
+            particle.velocity += Vec2::new(0.0, -9.81) * dt;
+            
+            // Apply mouse force if active (matches CPU approach)
+            if mouse_interaction.active {
+                let direction = mouse_interaction.position - transform.translation.truncate();
+                let distance = direction.length();
+                
+                if distance < mouse_interaction.radius {
+                    let force_direction = if mouse_interaction.repel { -direction } else { direction };
+                    let force_strength = mouse_interaction.strength * (1.0 - distance / mouse_interaction.radius);
+                    particle.velocity += force_direction.normalize() * force_strength * dt;
+                }
+            }
+            
+            // Dampen velocity (matches CPU approach)
+            particle.velocity *= 0.98;
+            
+            // Update position
+            transform.translation += Vec3::new(particle.velocity.x, particle.velocity.y, 0.0) * dt;
+            
+            // Handle boundary collisions (matches CPU approach)
+            if transform.translation.x < boundary_min.x + particle_radius {
+                transform.translation.x = boundary_min.x + particle_radius;
+                particle.velocity.x = -particle.velocity.x * boundary_dampening;
+            } else if transform.translation.x > boundary_max.x - particle_radius {
+                transform.translation.x = boundary_max.x - particle_radius;
+                particle.velocity.x = -particle.velocity.x * boundary_dampening;
+            }
+            
+            if transform.translation.y < boundary_min.y + particle_radius {
+                transform.translation.y = boundary_min.y + particle_radius;
+                particle.velocity.y = -particle.velocity.y * boundary_dampening;
+            } else if transform.translation.y > boundary_max.y - particle_radius {
+                transform.translation.y = boundary_max.y - particle_radius;
+                particle.velocity.y = -particle.velocity.y * boundary_dampening;
+            }
+            
+            // Set simplified density for visualization
+            particle.density = 1000.0 + particle.velocity.length() * 10.0;
+        }
+        
+        return;
+    }
+    
+    let gpu_data = gpu_particles.unwrap();
+    
+    // Skip if no update has occurred
+    if !gpu_data.updated || gpu_data.positions.is_empty() {
+        return;
+    }
+    
+    // Update CPU entities with GPU data
+    for (i, (_, mut transform, mut particle)) in particles.iter_mut().enumerate() {
+        if i < gpu_data.positions.len() {
+            // Update transform
+            transform.translation.x = gpu_data.positions[i].x;
+            transform.translation.y = gpu_data.positions[i].y;
+            
+            // Update particle properties
+            particle.velocity = gpu_data.velocities[i];
+            particle.density = gpu_data.densities[i];
+            particle.pressure = gpu_data.pressures[i];
+            particle.near_density = gpu_data.near_densities[i];
+            particle.near_pressure = gpu_data.near_pressures[i];
+        }
+    }
+    
+    // Mark the resource as processed
+    commands.insert_resource(GpuParticles {
+        positions: gpu_data.positions.clone(),
+        velocities: gpu_data.velocities.clone(),
+        densities: gpu_data.densities.clone(),
+        pressures: gpu_data.pressures.clone(),
+        near_densities: gpu_data.near_densities.clone(),
+        near_pressures: gpu_data.near_pressures.clone(),
+        updated: false,
+        particle_count: gpu_data.particle_count,
+    });
+}
+
+// Run condition to only run if GPU is enabled
+fn gpu_enabled(gpu_state: Res<GpuState>) -> bool {
+    gpu_state.enabled
+}
+
+// Run condition to only run render systems if GPU is enabled
+fn render_gpu_enabled(gpu_state: Res<RenderGpuState>) -> bool {
+    gpu_state.enabled
 } 

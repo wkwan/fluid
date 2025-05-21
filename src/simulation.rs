@@ -62,18 +62,26 @@ impl Plugin for SimulationPlugin {
            .init_resource::<ColorMapParams>()
            .add_systems(Startup, setup_simulation)
            .add_systems(Update, handle_input)
-           .add_systems(Update, apply_external_forces)
-           .add_systems(Update, update_spatial_hash)
-           .add_systems(Update, calculate_density)
-           .add_systems(Update, calculate_pressure_force)
-           .add_systems(Update, calculate_viscosity)
-           .add_systems(Update, update_positions)
-           .add_systems(Update, handle_collisions)
+           // Only run CPU simulation systems when GPU is disabled
+           .add_systems(Update, (
+               apply_external_forces,
+               update_spatial_hash,
+               calculate_density,
+               calculate_pressure_force,
+               calculate_viscosity,
+               update_positions,
+               handle_collisions,
+           ).run_if(gpu_disabled))
            .add_systems(Update, update_particle_colors)
            .add_systems(Update, update_fps_display)
            .add_systems(Update, handle_debug_ui_toggle)
            .add_systems(Update, track_max_velocity);
     }
+}
+
+// Run condition to skip CPU physics when GPU is enabled
+fn gpu_disabled(gpu_state: Res<GpuState>) -> bool {
+    !gpu_state.enabled
 }
 
 // Mark the FPS text for updating
@@ -726,12 +734,21 @@ fn update_particle_colors(
 fn update_fps_display(
     diagnostics: Res<DiagnosticsStore>,
     mut query: Query<&mut Text, With<FpsText>>,
+    time: Res<Time>,
 ) {
-    if let Ok(mut text) = query.single_mut() {
-        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
-            if let Some(value) = fps.smoothed() {
-                *text = Text::new(format!("FPS: {:.1}", value));
+    if time.elapsed_secs().fract() < 0.1 { // Update at most 10 times per second
+        if let Ok(mut text) = query.single_mut() {
+            // Get FPS from diagnostics if available
+            if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
+                if let Some(avg) = fps.average() {
+                    *text = Text::new(format!("FPS: {:.1}", avg));
+                    return;
+                }
             }
+            
+            // Fallback - calculate FPS from delta time
+            let fps = 1.0 / time.delta_secs();
+            *text = Text::new(format!("FPS: {:.1}", fps));
         }
     }
 }

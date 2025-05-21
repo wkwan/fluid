@@ -72,7 +72,7 @@ fn clamp_velocity(velocity: vec2<f32>, max_speed: f32) -> vec2<f32> {
 }
 
 // RTX 4090 optimized workgroup size
-@compute @workgroup_size(128, 1, 1)
+@compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_id) local_id: vec3<u32>) {
     let index = global_id.x;
     let local_index = local_id.x;
@@ -102,13 +102,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
     let max_speed = 1000.0;
     velocity = clamp_velocity(velocity, max_speed);
     
-    // Adaptive timestep based on velocity magnitude
-    let base_dt = params.dt;
-    let speed = length(velocity);
-    let adaptive_dt = select(base_dt, base_dt * min(1.0, 200.0 / speed), speed > 200.0);
+    // Use full timestep without adaptation to match CPU implementation
+    let dt = params.dt;
     
     // Update position with velocity
-    position += velocity * adaptive_dt;
+    position += velocity * dt;
     
     // Handle boundary collisions with improved damping
     let collision_margin = 0.01; // Small margin to prevent sticking to walls

@@ -156,7 +156,7 @@ fn process_cell(neighbor_cell: vec2<i32>, particle_index: u32, pos: vec2<f32>, p
     return pressure_force;
 }
 
-@compute @workgroup_size(128, 1, 1)
+@compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = global_id.x;
     

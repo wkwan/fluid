@@ -56,7 +56,7 @@ var<storage, read_write> spatial_offsets: array<u32>;
 @group(0) @binding(4)
 var<storage, read_write> target_particles: array<Particle>;
 
-@compute @workgroup_size(128, 1, 1)
+@compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = global_id.x;
     

@@ -162,7 +162,7 @@ fn predict_position(position: vec2<f32>, velocity: vec2<f32>) -> vec2<f32> {
 }
 
 // RTX 4090 optimized workgroup size
-@compute @workgroup_size(128, 1, 1)
+@compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_id) local_id: vec3<u32>) {
     let index = global_id.x;
     let local_index = local_id.x;
@@ -276,7 +276,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
     }
     
     // Limit extreme acceleration for better stability
-    let max_force = 10000.0;
+    let max_force = 50000.0;
     let force_magnitude = length(force);
     if (force_magnitude > max_force) {
         force = force * (max_force / force_magnitude);
