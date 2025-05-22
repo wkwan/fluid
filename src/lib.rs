@@ -9,6 +9,8 @@ pub mod spawner;
 pub mod render;
 pub mod reordering;
 pub mod orbit_camera;
+pub mod fluid3d;
+pub mod gpu_fluid3d;
 
 use bevy::prelude::*;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
