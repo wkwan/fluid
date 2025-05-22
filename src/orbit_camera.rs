@@ -12,10 +12,10 @@ pub struct OrbitCamera {
 /// Spawn a 3-D orbit camera when entering 3-D mode (if none exists).
 pub fn spawn_orbit_camera(
     mut commands: Commands,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
     existing: Query<(), With<OrbitCamera>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 || !existing.is_empty() {
+    if *sim_dim.get() != SimulationDimension::Dim3 || !existing.is_empty() {
         return;
     }
 
@@ -37,13 +37,13 @@ pub fn control_orbit_camera(
     mut mouse_evr: EventReader<MouseMotion>,
     mut scroll_evr: EventReader<MouseWheel>,
     buttons: Res<ButtonInput<MouseButton>>,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
         return;
     }
 
-    let Ok((mut cam, mut transform)) = query.get_single_mut() else { return; };
+    let Ok((mut cam, mut transform)) = query.single_mut() else { return; };
 
     if buttons.pressed(MouseButton::Right) {
         for ev in mouse_evr.read() {

@@ -5,8 +5,13 @@ use crate::spatial_hash::SpatialHash;
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera};
 use bevy::prelude::Camera3d;
-use crate::simulation3d::Fluid3DParams;
+use crate::simulation3d::{
+    apply_external_forces_3d, apply_pressure_viscosity_3d, calculate_density_pressure_3d,
+    integrate_positions_3d, setup_3d_environment, spawn_particles_3d, update_spatial_hash_3d,
+    Fluid3DParams, Marker3D, Particle3D, SpawnRegion3D, recycle_particles_3d,
+};
 use crate::spatial_hash3d::SpatialHashResource3D;
+use bevy::prelude::{States, Reflect};
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -60,66 +65,63 @@ pub struct SimulationPlugin;
 
 impl Plugin for SimulationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FluidParams>()
-           .init_resource::<MouseInteraction>()
-           .init_resource::<SpatialHashResource>()
-           .init_resource::<DebugUiState>()
-           .init_resource::<SimulationDimension>()
-           .init_resource::<ColorMapParams>()
-           .init_resource::<Fluid3DParams>()
-           .init_resource::<SpatialHashResource3D>()
-           .add_systems(Startup, setup_simulation)
-           .add_event::<ResetSim>()
-           .add_systems(Update, handle_input)
-           // ===== 2D Systems =====
-           .add_systems(Update, (
-               apply_external_forces,
-               update_spatial_hash,
-               calculate_density,
-               calculate_pressure_force,
-               calculate_viscosity,
-               update_positions,
-               handle_collisions,
-           ).run_if(gpu_disabled).run_if(is_dim2))
+        app.init_state::<SimulationDimension>()
+            .init_resource::<FluidParams>()
+            .init_resource::<MouseInteraction>()
+            .init_resource::<SpatialHashResource>()
+            .init_resource::<DebugUiState>()
+            .init_resource::<ColorMapParams>()
+            .init_resource::<Fluid3DParams>()
+            .init_resource::<SpawnRegion3D>()
+            .init_resource::<SpatialHashResource3D>()
+            .add_systems(Startup, setup_simulation)
+            .add_event::<ResetSim>()
+            .add_systems(Update, handle_input)
+            // ===== 2D Systems =====
+            .add_systems(Update, (
+                apply_external_forces,
+                update_spatial_hash,
+                calculate_density,
+                calculate_pressure_force,
+                calculate_viscosity,
+                update_positions,
+                handle_collisions,
+            ).run_if(gpu_disabled).run_if(in_state(SimulationDimension::Dim2)))
 
-           // ===== 3D Setup =====
-           .add_systems(Update, crate::simulation3d::setup_3d_environment.run_if(is_dim3))
-           .add_systems(Update, crate::simulation3d::spawn_particles_3d.run_if(is_dim3))
+            // ===== 3D Setup =====
+            .add_systems(Update, crate::simulation3d::setup_3d_environment.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::simulation3d::spawn_particles_3d.run_if(in_state(SimulationDimension::Dim3)))
 
-           // ===== 3D Physics =====
-           .add_systems(Update, (
-               crate::simulation3d::apply_external_forces_3d,
-               crate::simulation3d::update_spatial_hash_3d,
-               crate::simulation3d::calculate_density_pressure_3d,
-               crate::simulation3d::apply_pressure_viscosity_3d,
-               crate::simulation3d::integrate_positions_3d,
-           ).run_if(is_dim3))
-           .add_systems(Update, update_particle_colors)
-           .add_systems(Update, update_fps_display)
-           .add_systems(Update, handle_debug_ui_toggle)
-           .add_systems(Update, track_max_velocity)
-           .add_systems(Update, handle_reset_sim)
-           // Orbit camera (3D only)
-           .add_systems(Update, (
-               spawn_orbit_camera,
-               control_orbit_camera,
-           ).run_if(is_dim3));
+            // ===== 3D Physics =====
+            .add_systems(
+                Update,
+                (
+                    apply_external_forces_3d,
+                    update_spatial_hash_3d,
+                    calculate_density_pressure_3d,
+                    apply_pressure_viscosity_3d,
+                    integrate_positions_3d,
+                    recycle_particles_3d,
+                )
+                    .chain()
+                    .run_if(in_state(SimulationDimension::Dim3)),
+            )
+            .add_systems(Update, update_particle_colors)
+            .add_systems(Update, update_fps_display)
+            .add_systems(Update, handle_debug_ui_toggle)
+            .add_systems(Update, track_max_velocity)
+            .add_systems(Update, handle_reset_sim)
+            // Orbit camera (3D only)
+            .add_systems(Update, (
+                spawn_orbit_camera,
+                control_orbit_camera,
+            ).run_if(in_state(SimulationDimension::Dim3)));
     }
 }
 
 // Run condition to skip CPU physics when GPU is enabled
 fn gpu_disabled(gpu_state: Res<GpuState>) -> bool {
     !gpu_state.enabled
-}
-
-// Run condition to skip 2D systems when not in 2D mode
-fn is_dim2(sim_dim: Res<SimulationDimension>) -> bool {
-    *sim_dim == SimulationDimension::Dim2
-}
-
-// Run condition to skip 3D systems when not in 3D mode
-fn is_dim3(sim_dim: Res<SimulationDimension>) -> bool {
-    *sim_dim == SimulationDimension::Dim3
 }
 
 // Mark the FPS text for updating
@@ -265,7 +267,8 @@ fn handle_input(
     gpu_state: Res<GpuState>,
     mut perf_stats: ResMut<GpuPerformanceStats>,
     mut color_params: ResMut<ColorMapParams>,
-    mut sim_dim: ResMut<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
+    mut next_sim_dim: ResMut<NextState<SimulationDimension>>,
     mut reset_ev: EventWriter<ResetSim>,
     mut fluid3d_params: ResMut<Fluid3DParams>,
 ) {
@@ -328,14 +331,14 @@ fn handle_input(
     if debug_ui_state.visible {
         // Smoothing radius
         if keys.pressed(KeyCode::KeyQ) {
-            if *sim_dim == SimulationDimension::Dim2 {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
                 fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
             } else {
                 fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius + 0.5).min(100.0);
             }
         }
         if keys.pressed(KeyCode::KeyA) {
-            if *sim_dim == SimulationDimension::Dim2 {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
                 fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
             } else {
                 fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(5.0);
@@ -344,14 +347,14 @@ fn handle_input(
         
         // Pressure multiplier
         if keys.pressed(KeyCode::KeyW) {
-            if *sim_dim == SimulationDimension::Dim2 {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
                 fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
             } else {
                 fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier + 5.0).min(500.0);
             }
         }
         if keys.pressed(KeyCode::KeyS) {
-            if *sim_dim == SimulationDimension::Dim2 {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
                 fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
             } else {
                 fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier - 5.0).max(50.0);
@@ -368,14 +371,14 @@ fn handle_input(
         
         // Viscosity
         if keys.pressed(KeyCode::KeyR) {
-            if *sim_dim == SimulationDimension::Dim2 {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
                 fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
             } else {
                 fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength + 0.01).min(0.5);
             }
         }
         if keys.pressed(KeyCode::KeyF) {
-            if *sim_dim == SimulationDimension::Dim2 {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
                 fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
             } else {
                 fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength - 0.01).max(0.0);
@@ -384,7 +387,7 @@ fn handle_input(
         
         // Reset to defaults
         if keys.just_pressed(KeyCode::KeyX) {
-            if *sim_dim == SimulationDimension::Dim2 {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
                 *fluid_params = FluidParams::default();
             } else {
                 *fluid3d_params = Fluid3DParams::default();
@@ -395,12 +398,18 @@ fn handle_input(
     
     // Toggle between 2D and 3D simulation dimension
     if keys.just_pressed(KeyCode::KeyZ) {
-        *sim_dim = match *sim_dim {
+        let new_dim = match *sim_dim.get() {
             SimulationDimension::Dim2 => SimulationDimension::Dim3,
             SimulationDimension::Dim3 => SimulationDimension::Dim2,
         };
-        info!("Switched to {:?} mode", *sim_dim);
-        reset_ev.send(ResetSim);
+
+        // Trigger cleanup first
+        reset_ev.write(ResetSim);
+
+        // Schedule the state transition for the next frame
+        next_sim_dim.set(new_dim);
+
+        info!("Switched to {:?} mode", new_dim);
     }
 
     // Update settings text content
@@ -416,7 +425,7 @@ fn update_settings_text(
     gpu_state: &GpuState,
     perf_stats: &GpuPerformanceStats,
     color_params: &ColorMapParams,
-    sim_dim: &SimulationDimension,
+    sim_dim: &State<SimulationDimension>,
 ) {
     debug_ui_state.settings_text = format!(
         "Simulation Parameters (F1 to hide)\n\n\
@@ -440,18 +449,18 @@ fn update_settings_text(
         [Z] Toggle Dimension (current: {})
         \n\
         [X] Reset to Defaults",
-        if *sim_dim == SimulationDimension::Dim2 {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.smoothing_radius
         } else {
             fluid3d_params.smoothing_radius
         },
-        if *sim_dim == SimulationDimension::Dim2 {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.pressure_multiplier
         } else {
             fluid3d_params.pressure_multiplier
         },
         fluid_params.near_pressure_multiplier,
-        if *sim_dim == SimulationDimension::Dim2 {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.viscosity_strength
         } else {
             fluid3d_params.viscosity_strength
@@ -473,7 +482,7 @@ fn update_settings_text(
         } else {
             String::new()
         },
-        if *sim_dim == SimulationDimension::Dim2 { "2D" } else { "3D" }
+        if *sim_dim.get() == SimulationDimension::Dim2 { "2D" } else { "3D" }
     );
 }
 
@@ -888,16 +897,12 @@ fn track_max_velocity(
     }
 }
 
-#[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(States, Reflect, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+#[reflect(State)]
 pub enum SimulationDimension {
+    #[default]
     Dim2,
     Dim3,
-}
-
-impl Default for SimulationDimension {
-    fn default() -> Self {
-        SimulationDimension::Dim2
-    }
 }
 
 #[derive(Event)]
@@ -911,25 +916,27 @@ fn handle_reset_sim(
     q_marker3d: Query<Entity, With<crate::simulation3d::Marker3D>>,
     q_orbit: Query<Entity, With<crate::orbit_camera::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
+    sim_dim: Res<State<SimulationDimension>>,
 ) {
     if ev.is_empty() {
         return;
     }
     ev.clear();
 
+    // Always clean up all particle types and associated entities to ensure a fresh state.
     for e in q_particles2d.iter() {
-        commands.entity(e).despawn_recursive();
+        commands.entity(e).despawn();
     }
     for e in q_particles3d.iter() {
-        commands.entity(e).despawn_recursive();
+        commands.entity(e).despawn();
     }
     for e in q_marker3d.iter() {
-        commands.entity(e).despawn_recursive();
+        commands.entity(e).despawn();
     }
     for e in q_orbit.iter() {
-        commands.entity(e).despawn_recursive();
+        commands.entity(e).despawn();
     }
     for e in q_cam3d.iter() {
-        commands.entity(e).despawn_recursive();
+        commands.entity(e).despawn();
     }
 }

@@ -3,6 +3,7 @@ use bevy::math::primitives::Sphere;
 use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
+use rand;
 
 // 3D particle component
 #[derive(Component)]
@@ -24,6 +25,7 @@ const BOUNDARY_MIN: Vec3 = Vec3::new(-300.0, -300.0, -300.0);
 const BOUNDARY_MAX: Vec3 = Vec3::new(300.0, 300.0, 300.0);
 const PARTICLE_RADIUS: f32 = 5.0;
 const BOUNDARY_DAMPENING: f32 = 0.3;
+const KILL_Y_THRESHOLD: f32 = -400.0; // Below this Y value, particles are recycled
 
 #[derive(Resource, Clone)]
 pub struct Fluid3DParams {
@@ -44,14 +46,33 @@ impl Default for Fluid3DParams {
     }
 }
 
+#[derive(Resource, Clone)]
+pub struct SpawnRegion3D {
+    pub min: Vec3,
+    pub max: Vec3,
+    pub spacing: f32,
+    pub active: bool,
+}
+
+impl Default for SpawnRegion3D {
+    fn default() -> Self {
+        Self {
+            min: Vec3::new(-50.0, 100.0, -50.0),
+            max: Vec3::new(50.0, 200.0, 50.0),
+            spacing: PARTICLE_RADIUS * 2.5,
+            active: true,
+        }
+    }
+}
+
 // ======================== SETUP ============================
 pub fn setup_3d_environment(
     mut commands: Commands,
     _asset_server: Res<AssetServer>,
     query_cam: Query<(), With<Camera3d>>, // only spawn if none
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 {
+    if sim_dim.get() != &SimulationDimension::Dim3 {
         return;
     }
 
@@ -77,10 +98,11 @@ pub fn spawn_particles_3d(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
+    spawn_region: Res<SpawnRegion3D>,
     existing: Query<(), With<Particle3D>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 {
+    if sim_dim.get() != &SimulationDimension::Dim3 || !spawn_region.active {
         return;
     }
 
@@ -88,13 +110,6 @@ pub fn spawn_particles_3d(
     if !existing.is_empty() {
         return;
     }
-
-    const GRID: i32 = 15; // 15^3 ≈ 3.3k particles
-    let spacing = PARTICLE_RADIUS * 2.5; // slightly larger gap to avoid excessive overlap
-
-    let start_x = -((GRID as f32 - 1.0) * spacing) * 0.5;
-    let start_y = start_x;
-    let start_z = start_x;
 
     // Create shared mesh & material
     let sphere_mesh = meshes.add(
@@ -109,13 +124,19 @@ pub fn spawn_particles_3d(
         ..default()
     });
 
-    for xi in 0..GRID {
-        for yi in 0..GRID {
-            for zi in 0..GRID {
+    // Calculate grid dimensions
+    let size = spawn_region.max - spawn_region.min;
+    let grid_x = (size.x / spawn_region.spacing).floor() as i32;
+    let grid_y = (size.y / spawn_region.spacing).floor() as i32;
+    let grid_z = (size.z / spawn_region.spacing).floor() as i32;
+
+    for xi in 0..grid_x {
+        for yi in 0..grid_y {
+            for zi in 0..grid_z {
                 let pos = Vec3::new(
-                    start_x + xi as f32 * spacing,
-                    start_y + yi as f32 * spacing + 100.0, // elevate a bit for nice fall
-                    start_z + zi as f32 * spacing,
+                    spawn_region.min.x + xi as f32 * spawn_region.spacing,
+                    spawn_region.min.y + yi as f32 * spawn_region.spacing,
+                    spawn_region.min.z + zi as f32 * spawn_region.spacing,
                 );
 
                 commands.spawn((
@@ -141,9 +162,9 @@ pub fn spawn_particles_3d(
 pub fn apply_external_forces_3d(
     time: Res<Time>,
     mut particles: Query<&mut Particle3D>,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 {
+    if sim_dim.get() != &SimulationDimension::Dim3 {
         return;
     }
 
@@ -156,9 +177,9 @@ pub fn apply_external_forces_3d(
 pub fn update_spatial_hash_3d(
     mut spatial_hash: ResMut<SpatialHashResource3D>,
     particle_query: Query<(Entity, &Transform), With<Particle3D>>,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 {
+    if sim_dim.get() != &SimulationDimension::Dim3 {
         return;
     }
 
@@ -172,9 +193,9 @@ pub fn update_spatial_hash_3d(
 pub fn calculate_density_pressure_3d(
     mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
     spatial_hash: Res<SpatialHashResource3D>,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 {
+    if sim_dim.get() != &SimulationDimension::Dim3 {
         return;
     }
 
@@ -233,9 +254,9 @@ pub fn apply_pressure_viscosity_3d(
     mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
     spatial_hash: Res<SpatialHashResource3D>,
     params: Res<Fluid3DParams>,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 {
+    if sim_dim.get() != &SimulationDimension::Dim3 {
         return;
     }
 
@@ -290,7 +311,7 @@ pub fn apply_pressure_viscosity_3d(
         // Apply viscosity strength
         viscosity_force *= viscosity;
         // Accumulate
-        delta_vs[i] = (pressure_force + viscosity_force);
+        delta_vs[i] = pressure_force + viscosity_force;
     }
 
     // Write back velocity changes
@@ -304,38 +325,78 @@ pub fn apply_pressure_viscosity_3d(
 pub fn integrate_positions_3d(
     time: Res<Time>,
     mut particles: Query<(&mut Transform, &mut Particle3D)>,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if *sim_dim != SimulationDimension::Dim3 {
+    if sim_dim.get() != &SimulationDimension::Dim3 {
         return;
     }
     let dt = time.delta_secs();
     for (mut transform, mut particle) in particles.iter_mut() {
         transform.translation += particle.velocity * dt;
 
-        // Boundary collisions simple
+        // Boundary collisions with damping and friction
         let mut pos = transform.translation;
+        let mut vel = particle.velocity;
+
+        // X-axis
         if pos.x < BOUNDARY_MIN.x + PARTICLE_RADIUS {
             pos.x = BOUNDARY_MIN.x + PARTICLE_RADIUS;
-            particle.velocity.x = -particle.velocity.x * BOUNDARY_DAMPENING;
+            vel.x = -vel.x * BOUNDARY_DAMPENING;
         } else if pos.x > BOUNDARY_MAX.x - PARTICLE_RADIUS {
             pos.x = BOUNDARY_MAX.x - PARTICLE_RADIUS;
-            particle.velocity.x = -particle.velocity.x * BOUNDARY_DAMPENING;
+            vel.x = -vel.x * BOUNDARY_DAMPENING;
         }
+
+        // Y-axis
         if pos.y < BOUNDARY_MIN.y + PARTICLE_RADIUS {
             pos.y = BOUNDARY_MIN.y + PARTICLE_RADIUS;
-            particle.velocity.y = -particle.velocity.y * BOUNDARY_DAMPENING;
+            vel.y = -vel.y * BOUNDARY_DAMPENING;
         } else if pos.y > BOUNDARY_MAX.y - PARTICLE_RADIUS {
             pos.y = BOUNDARY_MAX.y - PARTICLE_RADIUS;
-            particle.velocity.y = -particle.velocity.y * BOUNDARY_DAMPENING;
+            vel.y = -vel.y * BOUNDARY_DAMPENING;
         }
+
+        // Z-axis
         if pos.z < BOUNDARY_MIN.z + PARTICLE_RADIUS {
             pos.z = BOUNDARY_MIN.z + PARTICLE_RADIUS;
-            particle.velocity.z = -particle.velocity.z * BOUNDARY_DAMPENING;
+            vel.z = -vel.z * BOUNDARY_DAMPENING;
         } else if pos.z > BOUNDARY_MAX.z - PARTICLE_RADIUS {
             pos.z = BOUNDARY_MAX.z - PARTICLE_RADIUS;
-            particle.velocity.z = -particle.velocity.z * BOUNDARY_DAMPENING;
+            vel.z = -vel.z * BOUNDARY_DAMPENING;
         }
+
         transform.translation = pos;
+        particle.velocity = vel;
+    }
+}
+
+pub fn recycle_particles_3d(
+    mut commands: Commands,
+    mut particles: Query<(Entity, &Transform, &mut Particle3D)>,
+    spawn_region: Res<SpawnRegion3D>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if sim_dim.get() != &SimulationDimension::Dim3 || !spawn_region.active {
+        return;
+    }
+
+    for (entity, transform, mut particle) in particles.iter_mut() {
+        if transform.translation.y < KILL_Y_THRESHOLD {
+            // Reset particle to a random position in spawn region
+            let size = spawn_region.max - spawn_region.min;
+            let pos = Vec3::new(
+                spawn_region.min.x + rand::random::<f32>() * size.x,
+                spawn_region.min.y + rand::random::<f32>() * size.y,
+                spawn_region.min.z + rand::random::<f32>() * size.z,
+            );
+
+            // Update transform and reset particle state
+            commands.entity(entity).insert(Transform::from_translation(pos));
+            particle.velocity = Vec3::ZERO;
+            particle.density = 0.0;
+            particle.pressure = 0.0;
+            particle.near_density = 0.0;
+            particle.near_pressure = 0.0;
+        }
     }
 } 

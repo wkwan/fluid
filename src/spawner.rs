@@ -201,13 +201,13 @@ fn spawn_in_regions(
 
 fn ensure_particles_2d(
     mut commands: Commands,
-    sim_dim: Res<SimulationDimension>,
+    sim_dim: Res<State<SimulationDimension>>,
     spawn_regions: Res<SpawnRegions>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     particles_q: Query<&Particle>,
 ) {
-    if *sim_dim != SimulationDimension::Dim2 {
+    if *sim_dim.get() != SimulationDimension::Dim2 {
         return;
     }
 
