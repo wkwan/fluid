@@ -229,6 +229,78 @@ pub fn calculate_density_pressure_3d(
     }
 }
 
+pub fn apply_pressure_viscosity_3d(
+    mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
+    spatial_hash: Res<SpatialHashResource3D>,
+    params: Res<Fluid3DParams>,
+    sim_dim: Res<SimulationDimension>,
+) {
+    if *sim_dim != SimulationDimension::Dim3 {
+        return;
+    }
+
+    let smoothing_radius = params.smoothing_radius;
+    let smoothing_radius_squared = smoothing_radius * smoothing_radius;
+    let math = FluidMath3D::new(smoothing_radius);
+    let viscosity = params.viscosity_strength;
+
+    // Cache positions and store entities order
+    let mut positions: Vec<Vec3> = Vec::with_capacity(particles_q.iter().count());
+    let mut velocities: Vec<Vec3> = Vec::with_capacity(positions.capacity());
+    let mut entities: Vec<Entity> = Vec::with_capacity(positions.capacity());
+
+    for (e, t, p) in particles_q.iter() {
+        entities.push(e);
+        positions.push(t.translation);
+        velocities.push(p.velocity);
+    }
+
+    let count = positions.len();
+    let mut delta_vs = vec![Vec3::ZERO; count];
+
+    for i in 0..count {
+        let pos_i = positions[i];
+        let vel_i = velocities[i];
+        let entity_i = entities[i];
+        let mut pressure_force = Vec3::ZERO;
+        let mut viscosity_force = Vec3::ZERO;
+
+        // Get neighbors using spatial hash
+        let neighbors = spatial_hash.spatial_hash.get_neighbors(pos_i, smoothing_radius);
+        for &neighbor_entity in &neighbors {
+            if neighbor_entity == entity_i { continue; }
+            if let Ok((_, t_j, p_j)) = particles_q.get(neighbor_entity) {
+                let pos_j = t_j.translation;
+                let vel_j = p_j.velocity;
+                let r = pos_i - pos_j;
+                let dist = r.length();
+                if dist > 0.0 && dist < smoothing_radius {
+                    // Pressure force (spiky gradient)
+                    let dir = r / dist;
+                    let pressure_term = (p_j.pressure + p_j.pressure) * 0.5; // symmetric
+                    let grad = math.spiky_pow3_derivative(dist, smoothing_radius);
+                    pressure_force -= dir * pressure_term * grad;
+
+                    // Viscosity force (Laplacian)
+                    let lap = math.spiky_pow2(dist, smoothing_radius);
+                    viscosity_force += (vel_j - vel_i) * lap;
+                }
+            }
+        }
+        // Apply viscosity strength
+        viscosity_force *= viscosity;
+        // Accumulate
+        delta_vs[i] = (pressure_force + viscosity_force);
+    }
+
+    // Write back velocity changes
+    for (i, entity) in entities.iter().enumerate() {
+        if let Ok((_, _, mut p)) = particles_q.get_mut(*entity) {
+            p.velocity += delta_vs[i];
+        }
+    }
+}
+
 pub fn integrate_positions_3d(
     time: Res<Time>,
     mut particles: Query<(&mut Transform, &mut Particle3D)>,

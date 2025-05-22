@@ -91,6 +91,7 @@ impl Plugin for SimulationPlugin {
                crate::simulation3d::apply_external_forces_3d,
                crate::simulation3d::update_spatial_hash_3d,
                crate::simulation3d::calculate_density_pressure_3d,
+               crate::simulation3d::apply_pressure_viscosity_3d,
                crate::simulation3d::integrate_positions_3d,
            ).run_if(is_dim3))
            .add_systems(Update, update_particle_colors)
