@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::math::primitives::Sphere;
 use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
+use crate::spatial_hash3d::SpatialHashResource3D;
 
 // 3D particle component
 #[derive(Component)]
@@ -152,8 +153,25 @@ pub fn apply_external_forces_3d(
     }
 }
 
+pub fn update_spatial_hash_3d(
+    mut spatial_hash: ResMut<SpatialHashResource3D>,
+    particle_query: Query<(Entity, &Transform), With<Particle3D>>,
+    sim_dim: Res<SimulationDimension>,
+) {
+    if *sim_dim != SimulationDimension::Dim3 {
+        return;
+    }
+
+    spatial_hash.spatial_hash.clear();
+    
+    for (entity, transform) in particle_query.iter() {
+        spatial_hash.spatial_hash.insert(transform.translation, entity);
+    }
+}
+
 pub fn calculate_density_pressure_3d(
     mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
+    spatial_hash: Res<SpatialHashResource3D>,
     sim_dim: Res<SimulationDimension>,
 ) {
     if *sim_dim != SimulationDimension::Dim3 {
@@ -181,11 +199,23 @@ pub fn calculate_density_pressure_3d(
     for i in 0..count {
         let pos_i = positions[i];
         let mut density = 0.0;
-        for j in 0..count {
-            let pos_j = positions[j];
-            let r2 = (pos_i - pos_j).length_squared();
-            density += math.poly6(r2, smoothing_radius_squared);
+        
+        // Get neighbors using spatial hash
+        let neighbors = spatial_hash.spatial_hash.get_neighbors(pos_i, smoothing_radius);
+        
+        // Add self-contribution
+        density += math.poly6(0.0, smoothing_radius_squared);
+        
+        // Add neighbor contributions
+        for &neighbor_entity in &neighbors {
+            if let Ok((_, transform, _)) = particles_q.get(neighbor_entity) {
+                let r2 = (pos_i - transform.translation).length_squared();
+                if r2 < smoothing_radius_squared {
+                    density += math.poly6(r2, smoothing_radius_squared);
+                }
+            }
         }
+        
         densities[i] = density;
     }
 

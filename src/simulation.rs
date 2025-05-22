@@ -6,6 +6,7 @@ use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera};
 use bevy::prelude::Camera3d;
 use crate::simulation3d::Fluid3DParams;
+use crate::spatial_hash3d::SpatialHashResource3D;
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -66,6 +67,7 @@ impl Plugin for SimulationPlugin {
            .init_resource::<SimulationDimension>()
            .init_resource::<ColorMapParams>()
            .init_resource::<Fluid3DParams>()
+           .init_resource::<SpatialHashResource3D>()
            .add_systems(Startup, setup_simulation)
            .add_event::<ResetSim>()
            .add_systems(Update, handle_input)
@@ -87,6 +89,7 @@ impl Plugin for SimulationPlugin {
            // ===== 3D Physics =====
            .add_systems(Update, (
                crate::simulation3d::apply_external_forces_3d,
+               crate::simulation3d::update_spatial_hash_3d,
                crate::simulation3d::calculate_density_pressure_3d,
                crate::simulation3d::integrate_positions_3d,
            ).run_if(is_dim3))
