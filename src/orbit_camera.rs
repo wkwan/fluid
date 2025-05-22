@@ -45,8 +45,11 @@ pub fn despawn_orbit_camera(
     query: Query<Entity, With<OrbitCamera>>,
 ) {
     if *sim_dim.get() == SimulationDimension::Dim2 {
+        let count = query.iter().count();
+        info!("Cleaning up {} orbit cameras in 2D mode", count);
+        
         for e in query.iter() {
-            commands.entity(e).despawn();
+            commands.entity(e).despawn_recursive();
         }
     }
 }

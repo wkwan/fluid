@@ -70,28 +70,28 @@ impl Plugin for SimulationPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<SimulationDimension>()
             .init_resource::<FluidParams>()
-            .init_resource::<MouseInteraction>()
-            .init_resource::<SpatialHashResource>()
-            .init_resource::<DebugUiState>()
-            .init_resource::<ColorMapParams>()
+           .init_resource::<MouseInteraction>()
+           .init_resource::<SpatialHashResource>()
+           .init_resource::<DebugUiState>()
+           .init_resource::<ColorMapParams>()
             .init_resource::<Fluid3DParams>()
             .init_resource::<SpawnRegion3D>()
             .init_resource::<SpatialHashResource3D>()
             .init_resource::<ToggleCooldown>()
             .init_resource::<PresetManager3D>()
             .add_systems(Startup, load_presets_system)
-            .add_systems(Startup, setup_simulation)
+           .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
-            .add_systems(Update, handle_input)
+           .add_systems(Update, handle_input)
             // ===== 2D Systems =====
-            .add_systems(Update, (
-                apply_external_forces,
-                update_spatial_hash,
-                calculate_density,
-                calculate_pressure_force,
-                calculate_viscosity,
-                update_positions,
-                handle_collisions,
+           .add_systems(Update, (
+               apply_external_forces,
+               update_spatial_hash,
+               calculate_density,
+               calculate_pressure_force,
+               calculate_viscosity,
+               update_positions,
+               handle_collisions,
             ).run_if(gpu_disabled).run_if(in_state(SimulationDimension::Dim2)))
 
             // ===== 3D Setup =====
@@ -113,9 +113,9 @@ impl Plugin for SimulationPlugin {
                     .run_if(in_state(SimulationDimension::Dim3)),
             )
             .add_systems(Update, crate::simulation3d::update_particle_colors_3d.run_if(in_state(SimulationDimension::Dim3)))
-            .add_systems(Update, update_particle_colors)
-            .add_systems(Update, update_fps_display)
-            .add_systems(Update, handle_debug_ui_toggle)
+           .add_systems(Update, update_particle_colors)
+           .add_systems(Update, update_fps_display)
+           .add_systems(Update, handle_debug_ui_toggle)
             .add_systems(Update, track_max_velocity)
             .add_systems(Update, handle_reset_sim)
             // Orbit camera (3D only)
@@ -353,14 +353,14 @@ fn handle_input(
         // Smoothing radius
         if keys.pressed(KeyCode::KeyQ) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-                fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
+            fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
             } else {
                 fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius + 0.5).min(100.0);
             }
         }
         if keys.pressed(KeyCode::KeyA) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-                fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
+            fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
             } else {
                 fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(5.0);
             }
@@ -369,14 +369,14 @@ fn handle_input(
         // Pressure multiplier
         if keys.pressed(KeyCode::KeyW) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-                fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
+            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
             } else {
                 fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier + 5.0).min(500.0);
             }
         }
         if keys.pressed(KeyCode::KeyS) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-                fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
+            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
             } else {
                 fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier - 5.0).max(50.0);
             }
@@ -393,14 +393,14 @@ fn handle_input(
         // Viscosity
         if keys.pressed(KeyCode::KeyR) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-                fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
+            fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
             } else {
                 fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength + 0.01).min(0.5);
             }
         }
         if keys.pressed(KeyCode::KeyF) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-                fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
+            fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
             } else {
                 fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength - 0.01).max(0.0);
             }
@@ -409,7 +409,7 @@ fn handle_input(
         // Reset to defaults
         if keys.just_pressed(KeyCode::KeyX) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-                *fluid_params = FluidParams::default();
+            *fluid_params = FluidParams::default();
             } else {
                 *fluid3d_params = Fluid3DParams::default();
             }
@@ -426,18 +426,18 @@ fn handle_input(
             SimulationDimension::Dim3 => SimulationDimension::Dim2,
         };
 
-        // Trigger cleanup first
+        info!("Starting transition from {:?} to {:?} mode", *sim_dim.get(), new_dim);
+        
+        // Trigger cleanup first and wait for it to complete
         reset_ev.write(ResetSim);
 
         // Schedule the state transition for the next frame
         next_sim_dim.set(new_dim);
 
-        info!("Switched to {:?} mode", new_dim);
-
-        // reset cooldown to 0.5s
-        toggle_cooldown.timer = Timer::from_seconds(0.5, TimerMode::Once);
+        // Use a longer cooldown (1.0s) to ensure transitions complete safely
+        toggle_cooldown.timer = Timer::from_seconds(1.0, TimerMode::Once);
     }
-
+    
     // Update settings text content
     update_settings_text(&mut debug_ui_state, &fluid_params, &fluid3d_params, &mouse_interaction, &gpu_state, &perf_stats, &color_params, &*sim_dim);
 }
@@ -921,7 +921,7 @@ fn track_max_velocity(
             perf_stats.iterations_per_frame = (base_iterations as f32 * velocity_scale).max(1.0) as u32;
         }
     }
-}
+} 
 
 #[derive(States, Reflect, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 #[reflect(State)]
@@ -949,22 +949,40 @@ fn handle_reset_sim(
     }
     ev.clear();
 
+    // Safe despawn helper that ensures we don't try to despawn entities that don't exist
+    let safe_despawn = |entity: Entity, commands: &mut Commands| {
+        commands.entity(entity).despawn_recursive();
+    };
+
+    // Log counts for debugging
+    let p2d_count = q_particles2d.iter().count();
+    let p3d_count = q_particles3d.iter().count();
+    let marker_count = q_marker3d.iter().count();
+    info!("Cleaning up: {}x 2D particles, {}x 3D particles, {}x 3D markers", 
+          p2d_count, p3d_count, marker_count);
+
     // Always clean up all particle types and associated entities to ensure a fresh state.
     for e in q_particles2d.iter() {
-        commands.entity(e).despawn();
+        safe_despawn(e, &mut commands);
     }
+    
     for e in q_particles3d.iter() {
-        commands.entity(e).despawn();
+        safe_despawn(e, &mut commands);
     }
+    
     for e in q_marker3d.iter() {
-        commands.entity(e).despawn();
+        safe_despawn(e, &mut commands);
     }
+    
     for e in q_orbit.iter() {
-        commands.entity(e).despawn();
+        safe_despawn(e, &mut commands);
     }
+    
     for e in q_cam3d.iter() {
-        commands.entity(e).despawn();
+        safe_despawn(e, &mut commands);
     }
+    
+    info!("Dimension transition cleanup complete");
 }
 
 // System to initialize ToggleCooldown with zero duration so it's ready
