@@ -24,6 +24,25 @@ const BOUNDARY_MAX: Vec3 = Vec3::new(300.0, 300.0, 300.0);
 const PARTICLE_RADIUS: f32 = 5.0;
 const BOUNDARY_DAMPENING: f32 = 0.3;
 
+#[derive(Resource, Clone)]
+pub struct Fluid3DParams {
+    pub smoothing_radius: f32,
+    pub target_density: f32,
+    pub pressure_multiplier: f32,
+    pub viscosity_strength: f32,
+}
+
+impl Default for Fluid3DParams {
+    fn default() -> Self {
+        Self {
+            smoothing_radius: 35.0,
+            target_density: 1000.0,
+            pressure_multiplier: 200.0,
+            viscosity_strength: 0.1,
+        }
+    }
+}
+
 // ======================== SETUP ============================
 pub fn setup_3d_environment(
     mut commands: Commands,

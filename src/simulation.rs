@@ -5,6 +5,7 @@ use crate::spatial_hash::SpatialHash;
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera};
 use bevy::prelude::Camera3d;
+use crate::simulation3d::Fluid3DParams;
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -64,6 +65,7 @@ impl Plugin for SimulationPlugin {
            .init_resource::<DebugUiState>()
            .init_resource::<SimulationDimension>()
            .init_resource::<ColorMapParams>()
+           .init_resource::<Fluid3DParams>()
            .add_systems(Startup, setup_simulation)
            .add_event::<ResetSim>()
            .add_systems(Update, handle_input)
@@ -261,6 +263,7 @@ fn handle_input(
     mut color_params: ResMut<ColorMapParams>,
     mut sim_dim: ResMut<SimulationDimension>,
     mut reset_ev: EventWriter<ResetSim>,
+    mut fluid3d_params: ResMut<Fluid3DParams>,
 ) {
     // Handle mouse interaction
     if let Some(window) = windows.iter().next() {
@@ -321,18 +324,34 @@ fn handle_input(
     if debug_ui_state.visible {
         // Smoothing radius
         if keys.pressed(KeyCode::KeyQ) {
-            fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
+            if *sim_dim == SimulationDimension::Dim2 {
+                fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
+            } else {
+                fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius + 0.5).min(100.0);
+            }
         }
         if keys.pressed(KeyCode::KeyA) {
-            fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
+            if *sim_dim == SimulationDimension::Dim2 {
+                fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
+            } else {
+                fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(5.0);
+            }
         }
         
         // Pressure multiplier
         if keys.pressed(KeyCode::KeyW) {
-            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
+            if *sim_dim == SimulationDimension::Dim2 {
+                fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
+            } else {
+                fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier + 5.0).min(500.0);
+            }
         }
         if keys.pressed(KeyCode::KeyS) {
-            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
+            if *sim_dim == SimulationDimension::Dim2 {
+                fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
+            } else {
+                fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier - 5.0).max(50.0);
+            }
         }
         
         // Surface tension
@@ -345,22 +364,31 @@ fn handle_input(
         
         // Viscosity
         if keys.pressed(KeyCode::KeyR) {
-            fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
+            if *sim_dim == SimulationDimension::Dim2 {
+                fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
+            } else {
+                fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength + 0.01).min(0.5);
+            }
         }
         if keys.pressed(KeyCode::KeyF) {
-            fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
+            if *sim_dim == SimulationDimension::Dim2 {
+                fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
+            } else {
+                fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength - 0.01).max(0.0);
+            }
         }
         
         // Reset to defaults
         if keys.just_pressed(KeyCode::KeyX) {
-            *fluid_params = FluidParams::default();
+            if *sim_dim == SimulationDimension::Dim2 {
+                *fluid_params = FluidParams::default();
+            } else {
+                *fluid3d_params = Fluid3DParams::default();
+            }
             *mouse_interaction = MouseInteraction::default();
         }
     }
     
-    // Update settings text content
-    update_settings_text(&mut debug_ui_state, &fluid_params, &mouse_interaction, &gpu_state, &perf_stats, &color_params, &*sim_dim);
-
     // Toggle between 2D and 3D simulation dimension
     if keys.just_pressed(KeyCode::KeyZ) {
         *sim_dim = match *sim_dim {
@@ -370,12 +398,16 @@ fn handle_input(
         info!("Switched to {:?} mode", *sim_dim);
         reset_ev.send(ResetSim);
     }
+
+    // Update settings text content
+    update_settings_text(&mut debug_ui_state, &fluid_params, &fluid3d_params, &mouse_interaction, &gpu_state, &perf_stats, &color_params, &*sim_dim);
 }
 
 // Helper function to update settings text
 fn update_settings_text(
     debug_ui_state: &mut DebugUiState, 
     fluid_params: &FluidParams,
+    fluid3d_params: &Fluid3DParams,
     mouse_interaction: &MouseInteraction,
     gpu_state: &GpuState,
     perf_stats: &GpuPerformanceStats,
@@ -404,10 +436,22 @@ fn update_settings_text(
         [Z] Toggle Dimension (current: {})
         \n\
         [X] Reset to Defaults",
-        fluid_params.smoothing_radius,
-        fluid_params.pressure_multiplier,
+        if *sim_dim == SimulationDimension::Dim2 {
+            fluid_params.smoothing_radius
+        } else {
+            fluid3d_params.smoothing_radius
+        },
+        if *sim_dim == SimulationDimension::Dim2 {
+            fluid_params.pressure_multiplier
+        } else {
+            fluid3d_params.pressure_multiplier
+        },
         fluid_params.near_pressure_multiplier,
-        fluid_params.viscosity_strength,
+        if *sim_dim == SimulationDimension::Dim2 {
+            fluid_params.viscosity_strength
+        } else {
+            fluid3d_params.viscosity_strength
+        },
         fluid_params.target_density,
         mouse_interaction.strength,
         mouse_interaction.radius,
