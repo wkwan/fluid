@@ -3,6 +3,9 @@ use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, DiagnosticsStore};
 use crate::math::FluidMath;
 use crate::spatial_hash::SpatialHash;
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
+use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera};
+use bevy::prelude::Camera3d;
+// 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
 #[derive(Resource, Clone, Copy)]
@@ -62,8 +65,9 @@ impl Plugin for SimulationPlugin {
            .init_resource::<SimulationDimension>()
            .init_resource::<ColorMapParams>()
            .add_systems(Startup, setup_simulation)
+           .add_event::<ResetSim>()
            .add_systems(Update, handle_input)
-           // Only run CPU simulation systems when GPU is disabled
+           // ===== 2D Systems =====
            .add_systems(Update, (
                apply_external_forces,
                update_spatial_hash,
@@ -72,17 +76,44 @@ impl Plugin for SimulationPlugin {
                calculate_viscosity,
                update_positions,
                handle_collisions,
-           ).run_if(gpu_disabled))
+           ).run_if(gpu_disabled).run_if(is_dim2))
+
+           // ===== 3D Setup =====
+           .add_systems(Update, crate::simulation3d::setup_3d_environment.run_if(is_dim3))
+           .add_systems(Update, crate::simulation3d::spawn_particles_3d.run_if(is_dim3))
+
+           // ===== 3D Physics =====
+           .add_systems(Update, (
+               crate::simulation3d::apply_external_forces_3d,
+               crate::simulation3d::calculate_density_pressure_3d,
+               crate::simulation3d::integrate_positions_3d,
+           ).run_if(is_dim3))
            .add_systems(Update, update_particle_colors)
            .add_systems(Update, update_fps_display)
            .add_systems(Update, handle_debug_ui_toggle)
-           .add_systems(Update, track_max_velocity);
+           .add_systems(Update, track_max_velocity)
+           .add_systems(Update, handle_reset_sim)
+           // Orbit camera (3D only)
+           .add_systems(Update, (
+               spawn_orbit_camera,
+               control_orbit_camera,
+           ).run_if(is_dim3));
     }
 }
 
 // Run condition to skip CPU physics when GPU is enabled
 fn gpu_disabled(gpu_state: Res<GpuState>) -> bool {
     !gpu_state.enabled
+}
+
+// Run condition to skip 2D systems when not in 2D mode
+fn is_dim2(sim_dim: Res<SimulationDimension>) -> bool {
+    *sim_dim == SimulationDimension::Dim2
+}
+
+// Run condition to skip 3D systems when not in 3D mode
+fn is_dim3(sim_dim: Res<SimulationDimension>) -> bool {
+    *sim_dim == SimulationDimension::Dim3
 }
 
 // Mark the FPS text for updating
@@ -229,6 +260,7 @@ fn handle_input(
     mut perf_stats: ResMut<GpuPerformanceStats>,
     mut color_params: ResMut<ColorMapParams>,
     mut sim_dim: ResMut<SimulationDimension>,
+    mut reset_ev: EventWriter<ResetSim>,
 ) {
     // Handle mouse interaction
     if let Some(window) = windows.iter().next() {
@@ -336,6 +368,7 @@ fn handle_input(
             SimulationDimension::Dim3 => SimulationDimension::Dim2,
         };
         info!("Switched to {:?} mode", *sim_dim);
+        reset_ev.send(ResetSim);
     }
 }
 
@@ -817,4 +850,38 @@ impl Default for SimulationDimension {
     fn default() -> Self {
         SimulationDimension::Dim2
     }
-} 
+}
+
+#[derive(Event)]
+pub struct ResetSim;
+
+fn handle_reset_sim(
+    mut ev: EventReader<ResetSim>,
+    mut commands: Commands,
+    q_particles2d: Query<Entity, With<Particle>>,
+    q_particles3d: Query<Entity, With<crate::simulation3d::Particle3D>>,
+    q_marker3d: Query<Entity, With<crate::simulation3d::Marker3D>>,
+    q_orbit: Query<Entity, With<crate::orbit_camera::OrbitCamera>>,
+    q_cam3d: Query<Entity, With<Camera3d>>,
+) {
+    if ev.is_empty() {
+        return;
+    }
+    ev.clear();
+
+    for e in q_particles2d.iter() {
+        commands.entity(e).despawn_recursive();
+    }
+    for e in q_particles3d.iter() {
+        commands.entity(e).despawn_recursive();
+    }
+    for e in q_marker3d.iter() {
+        commands.entity(e).despawn_recursive();
+    }
+    for e in q_orbit.iter() {
+        commands.entity(e).despawn_recursive();
+    }
+    for e in q_cam3d.iter() {
+        commands.entity(e).despawn_recursive();
+    }
+}

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use rand::Rng;
 
-use crate::simulation::{Particle, FluidParams};
+use crate::simulation::{Particle, FluidParams, SimulationDimension};
 
 pub struct SpawnerPlugin;
 
@@ -9,7 +9,8 @@ impl Plugin for SpawnerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SpawnRegions>()
            .add_systems(Startup, spawn_particles)
-           .add_systems(Update, handle_spawn_input);
+           .add_systems(Update, handle_spawn_input)
+           .add_systems(Update, ensure_particles_2d);
     }
 }
 
@@ -196,4 +197,43 @@ fn spawn_in_regions(
     }
     
     spawned_particles
+}
+
+fn ensure_particles_2d(
+    mut commands: Commands,
+    sim_dim: Res<SimulationDimension>,
+    spawn_regions: Res<SpawnRegions>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    particles_q: Query<&Particle>,
+) {
+    if *sim_dim != SimulationDimension::Dim2 {
+        return;
+    }
+
+    if !particles_q.is_empty() {
+        return;
+    }
+
+    let mut rng = rand::thread_rng();
+    let circle_mesh = meshes.add(Circle::new(5.0));
+    for (pos, vel) in spawn_in_regions(&spawn_regions, &mut rng) {
+        let material = materials.add(Color::srgb(0.0, 0.3, 1.0));
+        commands.spawn((
+            Mesh2d(circle_mesh.clone()),
+            MeshMaterial2d(material),
+            Transform::from_translation(pos.extend(0.0)),
+            GlobalTransform::default(),
+            Visibility::default(),
+            ViewVisibility::default(),
+            InheritedVisibility::default(),
+            Particle {
+                velocity: vel,
+                density: 0.0,
+                pressure: 0.0,
+                near_density: 0.0,
+                near_pressure: 0.0,
+            },
+        ));
+    }
 } 

@@ -1,4 +1,5 @@
 mod math;
+mod simulation3d;
 mod simulation;
 mod spatial_hash;
 mod gpu_fluid;
@@ -6,6 +7,7 @@ mod gpu_fluid;
 mod spawner;
 mod render;
 mod reordering;
+mod orbit_camera;
 
 use bevy::prelude::*;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;

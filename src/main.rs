@@ -6,6 +6,8 @@ mod spawner;
 mod spatial_hash;
 mod math;
 mod gpu_fluid;
+mod simulation3d;
+mod orbit_camera;
 
 use simulation::SimulationPlugin;
 use spawner::SpawnerPlugin;
