@@ -9,6 +9,7 @@ mod gpu_fluid;
 mod simulation3d;
 mod orbit_camera;
 use fluid::spatial_hash3d;
+mod presets;
 
 use simulation::SimulationPlugin;
 use spawner::SpawnerPlugin;

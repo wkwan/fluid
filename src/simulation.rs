@@ -12,6 +12,9 @@ use crate::simulation3d::{
 };
 use crate::spatial_hash3d::SpatialHashResource3D;
 use bevy::prelude::{States, Reflect};
+use bevy::time::Timer;
+use bevy::time::TimerMode;
+use crate::presets::{PresetManager3D, load_presets_system};
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -74,6 +77,9 @@ impl Plugin for SimulationPlugin {
             .init_resource::<Fluid3DParams>()
             .init_resource::<SpawnRegion3D>()
             .init_resource::<SpatialHashResource3D>()
+            .init_resource::<ToggleCooldown>()
+            .init_resource::<PresetManager3D>()
+            .add_systems(Startup, load_presets_system)
             .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
             .add_systems(Update, handle_input)
@@ -115,7 +121,13 @@ impl Plugin for SimulationPlugin {
             .add_systems(Update, (
                 spawn_orbit_camera,
                 control_orbit_camera,
-            ).run_if(in_state(SimulationDimension::Dim3)));
+            ).run_if(in_state(SimulationDimension::Dim3)))
+            // Orbit camera cleanup when returning to 2D
+            .add_systems(Update, (
+                crate::orbit_camera::despawn_orbit_camera,
+            ).run_if(in_state(SimulationDimension::Dim2)))
+            // Preset hotkey
+            .add_systems(Update, preset_hotkey_3d);
     }
 }
 
@@ -215,6 +227,12 @@ impl Default for SpatialHashResource {
 #[derive(Component)]
 struct SettingsText;
 
+// Cooldown resource to debounce Z dimension toggle
+#[derive(Resource, Default)]
+struct ToggleCooldown {
+    timer: Timer,
+}
+
 // Systems
 fn setup_simulation(mut commands: Commands) {
     // Set up UI
@@ -271,6 +289,8 @@ fn handle_input(
     mut next_sim_dim: ResMut<NextState<SimulationDimension>>,
     mut reset_ev: EventWriter<ResetSim>,
     mut fluid3d_params: ResMut<Fluid3DParams>,
+    mut toggle_cooldown: ResMut<ToggleCooldown>,
+    time: Res<Time>,
 ) {
     // Handle mouse interaction
     if let Some(window) = windows.iter().next() {
@@ -396,8 +416,10 @@ fn handle_input(
         }
     }
     
-    // Toggle between 2D and 3D simulation dimension
-    if keys.just_pressed(KeyCode::KeyZ) {
+    // tick cooldown
+    toggle_cooldown.timer.tick(time.delta());
+
+    if keys.just_pressed(KeyCode::KeyZ) && toggle_cooldown.timer.finished() {
         let new_dim = match *sim_dim.get() {
             SimulationDimension::Dim2 => SimulationDimension::Dim3,
             SimulationDimension::Dim3 => SimulationDimension::Dim2,
@@ -410,6 +432,9 @@ fn handle_input(
         next_sim_dim.set(new_dim);
 
         info!("Switched to {:?} mode", new_dim);
+
+        // reset cooldown to 0.5s
+        toggle_cooldown.timer = Timer::from_seconds(0.5, TimerMode::Once);
     }
 
     // Update settings text content
@@ -938,5 +963,30 @@ fn handle_reset_sim(
     }
     for e in q_cam3d.iter() {
         commands.entity(e).despawn();
+    }
+}
+
+// System to initialize ToggleCooldown with zero duration so it's ready
+fn init_toggle_cooldown(mut commands: Commands) {
+    commands.insert_resource(ToggleCooldown { timer: Timer::from_seconds(0.0, TimerMode::Once) });
+}
+
+// Hotkey to cycle 3D presets (P key)
+fn preset_hotkey_3d(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut preset_mgr: ResMut<PresetManager3D>,
+    mut fluid3d_params: ResMut<Fluid3DParams>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::KeyP) {
+        preset_mgr.next();
+        if let Some(p) = preset_mgr.current_preset() {
+            *fluid3d_params = p.params.clone();
+            info!("Loaded preset: {}", p.name);
+        }
     }
 }

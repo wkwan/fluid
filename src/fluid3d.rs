@@ -1,5 +1,6 @@
 use bevy::prelude::*;
-use crate::gpu_fluid3d::{GpuSim3DPlugin, GpuParticles3D};
+use crate::gpu_fluid3d::GpuSim3DPlugin;
+// use crate::gpu_render3d::GpuRender3DPlugin; // Disabled
 
 /// Plugin for 3D Fluid Simulation
 pub struct Fluid3DPlugin;
@@ -7,7 +8,9 @@ pub struct Fluid3DPlugin;
 impl Plugin for Fluid3DPlugin {
     fn build(&self, app: &mut App) {
         app
-            .init_resource::<GpuParticles3D>()
-            .add_plugins(GpuSim3DPlugin);
+            .add_plugins((
+                GpuSim3DPlugin,
+                // GpuRender3DPlugin,
+            ));
     }
 } 

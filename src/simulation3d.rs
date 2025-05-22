@@ -4,6 +4,7 @@ use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
 use rand;
+use serde::{Serialize, Deserialize};
 
 // 3D particle component
 #[derive(Component)]
@@ -21,13 +22,13 @@ pub struct Marker3D;
 
 // Constants for 3D sim (match 2D values where possible)
 const GRAVITY_3D: Vec3 = Vec3::new(0.0, -9.81, 0.0);
-const BOUNDARY_MIN: Vec3 = Vec3::new(-300.0, -300.0, -300.0);
-const BOUNDARY_MAX: Vec3 = Vec3::new(300.0, 300.0, 300.0);
+pub const BOUNDARY_MIN: Vec3 = Vec3::new(-300.0, -300.0, -300.0);
+pub const BOUNDARY_MAX: Vec3 = Vec3::new(300.0, 300.0, 300.0);
 const PARTICLE_RADIUS: f32 = 5.0;
 const BOUNDARY_DAMPENING: f32 = 0.3;
 const KILL_Y_THRESHOLD: f32 = -400.0; // Below this Y value, particles are recycled
 
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Fluid3DParams {
     pub smoothing_radius: f32,
     pub target_density: f32,
@@ -46,7 +47,7 @@ impl Default for Fluid3DParams {
     }
 }
 
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct SpawnRegion3D {
     pub min: Vec3,
     pub max: Vec3,
