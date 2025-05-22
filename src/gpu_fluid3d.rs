@@ -136,6 +136,7 @@ struct FluidComputePipelines3D {
     viscosity_pipeline: Option<ComputePipeline>,
     update_positions_pipeline: Option<ComputePipeline>,
     bind_group_layout: Option<BindGroupLayout>,
+    neighbor_reduction_pipeline: Option<ComputePipeline>,
 }
 
 impl Default for FluidComputePipelines3D {
@@ -147,6 +148,7 @@ impl Default for FluidComputePipelines3D {
             viscosity_pipeline: None,
             update_positions_pipeline: None,
             bind_group_layout: None,
+            neighbor_reduction_pipeline: None,
         }
     }
 }
@@ -159,6 +161,8 @@ struct FluidBindGroups3D {
     spatial_keys_buffer: Option<Buffer>,
     spatial_offsets_buffer: Option<Buffer>,
     num_particles: u32,
+    neighbor_counts_buffer: Option<Buffer>,
+    neighbor_indices_buffer: Option<Buffer>,
 }
 
 impl Default for FluidBindGroups3D {
@@ -170,6 +174,8 @@ impl Default for FluidBindGroups3D {
             spatial_keys_buffer: None,
             spatial_offsets_buffer: None,
             num_particles: 0,
+            neighbor_counts_buffer: None,
+            neighbor_indices_buffer: None,
         }
     }
 }
@@ -288,6 +294,28 @@ fn prepare_fluid_bind_groups_3d(
             // Binding 3: Spatial Offsets (read-write)
             BindGroupLayoutEntry {
                 binding: 3,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Binding 4: Neighbor counts (read-write)
+            BindGroupLayoutEntry {
+                binding: 4,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Binding 5: Neighbor indices (read-write)
+            BindGroupLayoutEntry {
+                binding: 5,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Storage { read_only: false },
@@ -467,12 +495,53 @@ fn prepare_fluid_bind_groups_3d(
         );
     }
     
+    // Create neighbor reduction pipeline if it doesn't exist
+    if fluid_pipelines.neighbor_reduction_pipeline.is_none() {
+        let shader = asset_server.load("shaders/neighbor_reduction3d.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("fluid_neighbor_reduction_3d_pipeline")),
+            layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipelines.neighbor_reduction_pipeline = pipeline_cache.get_compute_pipeline(pipeline_id).cloned();
+    }
+    
+    // Create or resize neighbor buffers
+    if fluid_bind_groups.neighbor_counts_buffer.is_none() || 
+       fluid_bind_groups.neighbor_indices_buffer.is_none() ||
+       fluid_bind_groups.num_particles != particle_count as u32 {
+        
+        // Create neighbor counts buffer
+        fluid_bind_groups.neighbor_counts_buffer = Some(render_device.create_buffer(&BufferDescriptor {
+            label: Some("fluid_neighbor_counts_3d_buffer"),
+            size: (particle_count * std::mem::size_of::<u32>()) as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+        
+        // Create neighbor indices buffer (max 128 neighbors per particle)
+        let max_neighbors = 128;
+        fluid_bind_groups.neighbor_indices_buffer = Some(render_device.create_buffer(&BufferDescriptor {
+            label: Some("fluid_neighbor_indices_3d_buffer"),
+            size: (particle_count * max_neighbors * std::mem::size_of::<u32>()) as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+    }
+    
     // Create bind group
     if fluid_bind_groups.bind_group.is_none() && 
        fluid_bind_groups.particle_buffer.is_some() && 
        fluid_bind_groups.params_buffer.is_some() &&
        fluid_bind_groups.spatial_keys_buffer.is_some() &&
-       fluid_bind_groups.spatial_offsets_buffer.is_some()
+       fluid_bind_groups.spatial_offsets_buffer.is_some() &&
+       fluid_bind_groups.neighbor_counts_buffer.is_some() &&
+       fluid_bind_groups.neighbor_indices_buffer.is_some()
     {
         let bind_group = render_device.create_bind_group("fluid_compute_3d_bind_group", 
             fluid_pipelines.bind_group_layout.as_ref().unwrap(),
@@ -492,6 +561,14 @@ fn prepare_fluid_bind_groups_3d(
                 BindGroupEntry {
                     binding: 3,
                     resource: fluid_bind_groups.spatial_offsets_buffer.as_ref().unwrap().as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: fluid_bind_groups.neighbor_counts_buffer.as_ref().unwrap().as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: fluid_bind_groups.neighbor_indices_buffer.as_ref().unwrap().as_entire_binding(),
                 },
             ]
         );
@@ -585,5 +662,19 @@ fn queue_fluid_compute_3d(
     }
     
     // Submit fourth batch
+    render_queue.submit(std::iter::once(encoder.finish()));
+    
+    // Create command encoder for neighbor reduction
+    let mut encoder = render_device.create_command_encoder(&Default::default());
+    
+    {
+        // Run neighbor reduction
+        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+        compute_pass.set_pipeline(fluid_pipelines.neighbor_reduction_pipeline.as_ref().unwrap());
+        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
+        compute_pass.dispatch_workgroups((particle_count + 127) / 128, 1, 1);
+    }
+    
+    // Submit neighbor reduction batch
     render_queue.submit(std::iter::once(encoder.finish()));
 } 

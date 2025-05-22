@@ -6,86 +6,98 @@ struct Particle3D {
     pressure: f32,
     near_density: f32,
     near_pressure: f32,
-    pressure_force: vec3<f32>,
-    near_pressure_force: vec3<f32>,
-    viscosity_force: vec3<f32>,
+    force: vec3<f32>,
 }
 
 struct FluidParams3D {
     smoothing_radius: f32,
-    target_density: f32,
+    rest_density: f32,
     pressure_multiplier: f32,
     near_pressure_multiplier: f32,
-    viscosity_strength: f32,
+    viscosity: f32,
     gravity: vec3<f32>,
-    delta_time: f32,
     bounds_min: vec3<f32>,
     bounds_max: vec3<f32>,
-    damping: f32,
 }
+
+const PI: f32 = 3.14159265359;
+const MAX_NEIGHBORS: u32 = 128u;
 
 // Bindings
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle3D>;
-@group(0) @binding(1) var<uniform> params: FluidParams3D;
+@group(0) @binding(1) var<storage, read> params: FluidParams3D;
+@group(0) @binding(2) var<storage, read> neighbor_counts: array<u32>;
+@group(0) @binding(3) var<storage, read> neighbor_indices: array<u32>;
 
 // Helper function to handle boundary collisions
-fn handle_boundary_collision(pos: vec3<f32>, vel: vec3<f32>) -> vec3<f32> {
+fn handle_boundary_collision(pos: vec3<f32>, vel: vec3<f32>, min_bounds: vec3<f32>, max_bounds: vec3<f32>) -> vec3<f32> {
     var new_vel = vel;
     
     // X-axis boundaries
-    if (pos.x < params.bounds_min.x) {
-        new_vel.x = abs(new_vel.x) * params.damping;
-    } else if (pos.x > params.bounds_max.x) {
-        new_vel.x = -abs(new_vel.x) * params.damping;
+    if (pos.x < min_bounds.x) {
+        new_vel.x = abs(new_vel.x);
+    } else if (pos.x > max_bounds.x) {
+        new_vel.x = -abs(new_vel.x);
     }
     
     // Y-axis boundaries
-    if (pos.y < params.bounds_min.y) {
-        new_vel.y = abs(new_vel.y) * params.damping;
-    } else if (pos.y > params.bounds_max.y) {
-        new_vel.y = -abs(new_vel.y) * params.damping;
+    if (pos.y < min_bounds.y) {
+        new_vel.y = abs(new_vel.y);
+    } else if (pos.y > max_bounds.y) {
+        new_vel.y = -abs(new_vel.y);
     }
     
     // Z-axis boundaries
-    if (pos.z < params.bounds_min.z) {
-        new_vel.z = abs(new_vel.z) * params.damping;
-    } else if (pos.z > params.bounds_max.z) {
-        new_vel.z = -abs(new_vel.z) * params.damping;
+    if (pos.z < min_bounds.z) {
+        new_vel.z = abs(new_vel.z);
+    } else if (pos.z > max_bounds.z) {
+        new_vel.z = -abs(new_vel.z);
     }
     
     return new_vel;
 }
 
 // Main compute shader for updating particle positions
-@compute @workgroup_size(128, 1, 1)
+@compute @workgroup_size(128)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let index = global_id.x;
-    
-    if index >= arrayLength(&particles) {
+    let particle_idx = global_id.x;
+    if (particle_idx >= arrayLength(&particles)) {
         return;
     }
     
-    // Get particle data
-    var particle = particles[index];
+    var particle = particles[particle_idx];
     
-    // Combine all forces
-    let total_force = particle.pressure_force + 
-                     particle.near_pressure_force + 
-                     particle.viscosity_force + 
-                     params.gravity;
+    // Apply forces and update position using Verlet integration
+    let dt = 0.016; // Fixed time step
+    let dt2 = dt * dt;
     
-    // Update velocity using Verlet integration
-    particle.velocity += total_force * params.delta_time;
+    // Update velocity with forces
+    particle.velocity = particle.velocity + particle.force * dt;
+    
+    // Add gravity
+    particle.velocity = particle.velocity + params.gravity * dt;
     
     // Update position
-    particle.position += particle.velocity * params.delta_time;
+    particle.position = particle.position + particle.velocity * dt;
     
     // Handle boundary collisions
-    particle.velocity = handle_boundary_collision(particle.position, particle.velocity);
+    particle.velocity = handle_boundary_collision(
+        particle.position,
+        particle.velocity,
+        params.bounds_min,
+        params.bounds_max
+    );
     
     // Clamp position to bounds
-    particle.position = clamp(particle.position, params.bounds_min, params.bounds_max);
+    particle.position = clamp(
+        particle.position,
+        params.bounds_min,
+        params.bounds_max
+    );
+    
+    // Reset force for next frame
+    particle.force = vec3<f32>(0.0);
     
     // Update particle
-    particles[index] = particle;
+    particles[particle_idx] = particle;
 } 

@@ -1,54 +1,29 @@
 // 3D Density and Pressure Calculation Compute Shader
 // Mirrors Unity's CalculateDensities kernel with WGSL optimizations
 
-const PI: f32 = 3.14159265359;
-
 struct Particle3D {
     position: vec3<f32>,
-    padding0: f32,  // Padding for 16-byte alignment
     velocity: vec3<f32>,
-    padding1: f32,  // Padding for 16-byte alignment
     density: f32,
     pressure: f32,
     near_density: f32,
     near_pressure: f32,
+    force: vec3<f32>,
 }
 
 struct FluidParams3D {
-    // Vec4 aligned group 1
     smoothing_radius: f32,
-    target_density: f32,
+    rest_density: f32,
     pressure_multiplier: f32,
     near_pressure_multiplier: f32,
-    
-    // Vec4 aligned group 2
-    viscosity_strength: f32,
-    boundary_dampening: f32,
-    particle_radius: f32,
-    dt: f32,
-    
-    // Vec4 aligned group 3
-    boundary_min: vec3<f32>,
-    boundary_min_padding: f32,
-    
-    // Vec4 aligned group 4
-    boundary_max: vec3<f32>,
-    boundary_max_padding: f32,
-    
-    // Vec4 aligned group 5
+    viscosity: f32,
     gravity: vec3<f32>,
-    gravity_padding: f32,
-    
-    // Vec4 aligned group 6
-    mouse_position: vec3<f32>,
-    mouse_radius: f32,
-    mouse_strength: f32,
-    
-    // Vec4 aligned group 7
-    mouse_active: u32,
-    mouse_repel: u32,
-    padding: vec2<u32>,
+    bounds_min: vec3<f32>,
+    bounds_max: vec3<f32>,
 }
+
+const PI: f32 = 3.14159265359;
+const MAX_NEIGHBORS: u32 = 128u;
 
 // Constants for hashing - match Unity's implementation
 const HASH_K1: u32 = 15823u;
@@ -79,17 +54,10 @@ struct CachedParticle3D {
 
 var<workgroup> shared_particles: array<CachedParticle3D, 128>;
 
-@group(0) @binding(0)
-var<storage, read_write> particles: array<Particle3D>;
-
-@group(0) @binding(1)
-var<uniform> params: FluidParams3D;
-
-@group(0) @binding(2)
-var<storage, read> spatial_keys: array<u32>;
-
-@group(0) @binding(3)
-var<storage, read> spatial_offsets: array<atomic<u32>>;
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle3D>;
+@group(0) @binding(1) var<storage, read> params: FluidParams3D;
+@group(0) @binding(2) var<storage, read> neighbor_counts: array<u32>;
+@group(0) @binding(3) var<storage, read> neighbor_indices: array<u32>;
 
 // Helper functions
 fn get_cell_3d(position: vec3<f32>, cell_size: f32) -> vec3<i32> {
@@ -129,69 +97,67 @@ fn spiky_kernel_pow3(distance: f32, radius: f32) -> f32 {
     return scale * v * v * v;
 }
 
-// Main compute shader for density and pressure calculation
-@compute @workgroup_size(128, 1, 1)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let index = global_id.x;
+fn poly6_kernel(r: vec3<f32>, h: f32) -> f32 {
+    let r_len = length(r);
+    if (r_len >= h || r_len < 0.0001) {
+        return 0.0;
+    }
     
-    if index >= arrayLength(&particles) {
+    let h2 = h * h;
+    let h3 = h2 * h;
+    let h4 = h3 * h;
+    let h5 = h4 * h;
+    let h6 = h5 * h;
+    let h9 = h6 * h3;
+    
+    let coef = 315.0 / (64.0 * PI * h9);
+    let h_r = h - r_len;
+    return coef * h_r * h_r * h_r;
+}
+
+// Main compute shader for density and pressure calculation
+@compute @workgroup_size(128)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let particle_idx = global_id.x;
+    if (particle_idx >= arrayLength(&particles)) {
         return;
     }
     
-    // Get particle data
-    let position = particles[index].position;
-    let cell = get_cell_3d(position, params.smoothing_radius * 2.0);
-    let sqr_radius = params.smoothing_radius * params.smoothing_radius;
+    var particle = particles[particle_idx];
+    var density = 0.0;
+    var near_density = 0.0;
     
-    var density: f32 = 0.0;
-    var near_density: f32 = 0.0;
+    // Get number of neighbors for this particle
+    let num_neighbors = neighbor_counts[particle_idx];
     
-    // Search neighboring cells
-    for (var i = 0u; i < 27u; i = i + 1u) {
-        let offset_cell = cell + OFFSETS_3D[i];
-        let hash = hash_cell_3d(offset_cell);
-        let key = key_from_hash(hash, arrayLength(&spatial_offsets));
-        var curr_index = atomicLoad(&spatial_offsets[key]);
+    // Calculate densities from neighbors
+    for (var i = 0u; i < num_neighbors; i = i + 1u) {
+        let neighbor_idx = neighbor_indices[particle_idx * MAX_NEIGHBORS + i];
+        let neighbor = particles[neighbor_idx];
         
-        while (curr_index < arrayLength(&particles)) {
-            let neighbor_index = curr_index;
-            curr_index = curr_index + 1u;
-            
-            let neighbor_key = spatial_keys[neighbor_index];
-            if (neighbor_key != key) {
-                break;
-            }
-            
-            // Skip self
-            if (neighbor_index == index) {
-                continue;
-            }
-            
-            let neighbor_pos = particles[neighbor_index].position;
-            let offset = neighbor_pos - position;
-            let sqr_distance = dot(offset, offset);
-            
-            // Skip if not within radius
-            if (sqr_distance > sqr_radius) {
-                continue;
-            }
-            
-            let distance = sqrt(sqr_distance);
-            density += spiky_kernel_pow2(distance, params.smoothing_radius);
-            near_density += spiky_kernel_pow3(distance, params.smoothing_radius);
+        let r = particle.position - neighbor.position;
+        let r_len = length(r);
+        
+        if (r_len < params.smoothing_radius && r_len > 0.0001) {
+            let kernel = poly6_kernel(r, params.smoothing_radius);
+            density = density + kernel;
+            near_density = near_density + kernel * kernel;
         }
     }
     
-    // Calculate pressure from density
-    let density_error = density - params.target_density;
-    let pressure = density_error * params.pressure_multiplier;
-    let near_pressure = near_density * params.near_pressure_multiplier;
+    // Add self-contribution
+    density = density + poly6_kernel(vec3<f32>(0.0), params.smoothing_radius);
+    near_density = near_density + poly6_kernel(vec3<f32>(0.0), params.smoothing_radius) * 
+        poly6_kernel(vec3<f32>(0.0), params.smoothing_radius);
+    
+    // Calculate pressure
+    let pressure = max(0.0, params.pressure_multiplier * (density - params.rest_density));
+    let near_pressure = max(0.0, params.near_pressure_multiplier * near_density);
     
     // Update particle
-    var particle = particles[index];
     particle.density = density;
-    particle.pressure = pressure;
     particle.near_density = near_density;
+    particle.pressure = pressure;
     particle.near_pressure = near_pressure;
-    particles[index] = particle;
+    particles[particle_idx] = particle;
 } 
