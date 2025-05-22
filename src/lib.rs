@@ -11,7 +11,7 @@ pub mod reordering;
 pub mod orbit_camera;
 pub mod fluid3d;
 pub mod gpu_fluid3d;
-// pub mod gpu_render3d; // Temporarily disabled due to API mismatch, to fix build
+pub mod gpu_render3d;
 pub mod presets;
 
 use bevy::prelude::*;

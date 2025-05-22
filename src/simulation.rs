@@ -112,6 +112,7 @@ impl Plugin for SimulationPlugin {
                     .chain()
                     .run_if(in_state(SimulationDimension::Dim3)),
             )
+            .add_systems(Update, crate::simulation3d::update_particle_colors_3d.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, update_particle_colors)
             .add_systems(Update, update_fps_display)
             .add_systems(Update, handle_debug_ui_toggle)

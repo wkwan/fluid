@@ -5,6 +5,7 @@ use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
 use rand;
 use serde::{Serialize, Deserialize};
+use bevy::pbr::MeshMaterial3d;
 
 // 3D particle component
 #[derive(Component)]
@@ -398,6 +399,21 @@ pub fn recycle_particles_3d(
             particle.pressure = 0.0;
             particle.near_density = 0.0;
             particle.near_pressure = 0.0;
+        }
+    }
+}
+
+pub fn update_particle_colors_3d(
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    particles: Query<(&Particle3D, &MeshMaterial3d<StandardMaterial>)>,
+) {
+    for (particle, mat_handle) in particles.iter() {
+        let speed = particle.velocity.length();
+        // map speed to color ramp (blue->red)
+        let t = (speed / 300.0).clamp(0.0, 1.0);
+        let color = Color::srgb(t, 0.2, 1.0 - t);
+        if let Some(mat) = materials.get_mut(&mat_handle.0) {
+            mat.base_color = color;
         }
     }
 } 

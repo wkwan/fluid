@@ -36,8 +36,10 @@ var<workgroup> shared_particles: array<SharedParticle, BLOCK_SIZE>;
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle3D>;
 @group(0) @binding(1) var<storage, read> params: FluidParams3D;
-@group(0) @binding(2) var<storage, read_write> neighbor_counts: array<u32>;
-@group(0) @binding(3) var<storage, read_write> neighbor_indices: array<u32>;
+@group(0) @binding(2) var<storage, read> spatial_keys_dummy: array<u32>;
+@group(0) @binding(3) var<storage, read> spatial_offsets_dummy: array<u32>;
+@group(0) @binding(4) var<storage, read_write> neighbor_counts: array<u32>;
+@group(0) @binding(5) var<storage, read_write> neighbor_indices: array<u32>;
 
 fn get_cell_3d(pos: vec3<f32>, cell_size: f32) -> vec3<i32> {
     return vec3<i32>(

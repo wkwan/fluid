@@ -5,7 +5,7 @@ use bevy::{
             BindGroup, BindGroupLayout, BindGroupLayoutEntry, BindGroupEntry, 
             BindingType, Buffer, BufferBindingType, BufferUsages, BufferDescriptor,
             BufferInitDescriptor, ComputePipeline, ComputePipelineDescriptor, 
-            PipelineCache, ShaderStages,
+            PipelineCache, ShaderStages, MapMode, Maintain,
         },
         renderer::{RenderDevice, RenderQueue},
         RenderApp, Render, RenderSet, Extract, ExtractSchedule,
@@ -163,6 +163,7 @@ struct FluidBindGroups3D {
     num_particles: u32,
     neighbor_counts_buffer: Option<Buffer>,
     neighbor_indices_buffer: Option<Buffer>,
+    readback_buffer: Option<Buffer>,
 }
 
 impl Default for FluidBindGroups3D {
@@ -176,6 +177,7 @@ impl Default for FluidBindGroups3D {
             num_particles: 0,
             neighbor_counts_buffer: None,
             neighbor_indices_buffer: None,
+            readback_buffer: None,
         }
     }
 }
@@ -495,6 +497,17 @@ fn prepare_fluid_bind_groups_3d(
         );
     }
     
+    // Create or resize readback buffer (positions + velocities) for debug every N frames
+    let particle_buffer_size = (particle_count as u64) * std::mem::size_of::<GpuParticleData3D>() as u64;
+    if fluid_bind_groups.readback_buffer.is_none() || fluid_bind_groups.num_particles != particle_count as u32 {
+        fluid_bind_groups.readback_buffer = Some(render_device.create_buffer(&BufferDescriptor {
+            label: Some("fluid_readback_3d_buffer"),
+            size: particle_buffer_size,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        }));
+    }
+    
     // Create neighbor reduction pipeline if it doesn't exist
     if fluid_pipelines.neighbor_reduction_pipeline.is_none() {
         let shader = asset_server.load("shaders/neighbor_reduction3d.wgsl");
@@ -600,9 +613,9 @@ fn queue_fluid_compute_3d(
         return;
     }
     
-    // Create command encoder for the first batch (spatial hashing)
+    // First batch: spatial hash + neighbor reduction
     let mut encoder = render_device.create_command_encoder(&Default::default());
-    
+
     {
         // 1. Build spatial hash
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
@@ -610,11 +623,19 @@ fn queue_fluid_compute_3d(
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
         compute_pass.dispatch_workgroups((particle_count + 127) / 128, 1, 1);
     }
-    
-    // Submit first batch
+
+    {
+        // 2. Neighbor reduction
+        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+        compute_pass.set_pipeline(fluid_pipelines.neighbor_reduction_pipeline.as_ref().unwrap());
+        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
+        compute_pass.dispatch_workgroups((particle_count + 127) / 128, 1, 1);
+    }
+
+    // Submit batch
     render_queue.submit(std::iter::once(encoder.finish()));
-    
-    // Create command encoder for the second batch (density and pressure)
+
+    // Second batch: density & pressure
     let mut encoder = render_device.create_command_encoder(&Default::default());
     
     {
@@ -649,7 +670,7 @@ fn queue_fluid_compute_3d(
     
     // Submit third batch
     render_queue.submit(std::iter::once(encoder.finish()));
-    
+
     // Create command encoder for the fourth batch (integration)
     let mut encoder = render_device.create_command_encoder(&Default::default());
     
@@ -660,21 +681,29 @@ fn queue_fluid_compute_3d(
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
         compute_pass.dispatch_workgroups((particle_count + 127) / 128, 1, 1);
     }
-    
-    // Submit fourth batch
-    render_queue.submit(std::iter::once(encoder.finish()));
-    
-    // Create command encoder for neighbor reduction
-    let mut encoder = render_device.create_command_encoder(&Default::default());
-    
-    {
-        // Run neighbor reduction
-        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
-        compute_pass.set_pipeline(fluid_pipelines.neighbor_reduction_pipeline.as_ref().unwrap());
-        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
-        compute_pass.dispatch_workgroups((particle_count + 127) / 128, 1, 1);
+
+    // Copy data to readback buffer (debug every frame for now)
+    if let Some(readback) = &fluid_bind_groups.readback_buffer {
+        encoder.copy_buffer_to_buffer(
+            fluid_bind_groups.particle_buffer.as_ref().unwrap(),
+            0,
+            readback,
+            0,
+            (particle_count as u64) * std::mem::size_of::<GpuParticleData3D>() as u64,
+        );
     }
-    
-    // Submit neighbor reduction batch
+
     render_queue.submit(std::iter::once(encoder.finish()));
+
+    // Simple immediate mapping (could throttle to N frames)
+    if let Some(readback) = &fluid_bind_groups.readback_buffer {
+        // map asynchronously
+        let slice = readback.slice(..);
+        slice.map_async(MapMode::Read, |_| {});
+        // poll device to drive mapping
+        render_device.wgpu_device().poll(Maintain::Wait);
+        let _data = slice.get_mapped_range();
+        // TODO: deserialize into GpuParticles3D for debugging
+        readback.unmap();
+    }
 } 

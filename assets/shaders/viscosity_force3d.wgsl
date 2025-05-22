@@ -41,8 +41,10 @@ struct CachedParticle3D {
 // Bindings
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle3D>;
 @group(0) @binding(1) var<storage, read> params: FluidParams3D;
-@group(0) @binding(2) var<storage, read> neighbor_counts: array<u32>;
-@group(0) @binding(3) var<storage, read> neighbor_indices: array<u32>;
+@group(0) @binding(2) var<storage, read> spatial_keys_dummy: array<u32>;
+@group(0) @binding(3) var<storage, read> spatial_offsets_dummy: array<u32>;
+@group(0) @binding(4) var<storage, read> neighbor_counts: array<u32>;
+@group(0) @binding(5) var<storage, read> neighbor_indices: array<u32>;
 
 // Helper functions
 fn get_cell_3d(pos: vec3<f32>, cell_size: f32) -> vec3<i32> {
