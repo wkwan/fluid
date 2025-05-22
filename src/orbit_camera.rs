@@ -43,13 +43,17 @@ pub fn despawn_orbit_camera(
     mut commands: Commands,
     sim_dim: Res<State<SimulationDimension>>,
     query: Query<Entity, With<OrbitCamera>>,
+    world: &World,
 ) {
     if *sim_dim.get() == SimulationDimension::Dim2 {
         let count = query.iter().count();
         info!("Cleaning up {} orbit cameras in 2D mode", count);
         
         for e in query.iter() {
-            commands.entity(e).despawn_recursive();
+            // Only attempt to despawn if the entity exists in the world
+            if world.get_entity(e).is_ok() {
+                commands.entity(e).despawn();
+            }
         }
     }
 }

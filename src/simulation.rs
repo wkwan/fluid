@@ -943,6 +943,7 @@ fn handle_reset_sim(
     q_orbit: Query<Entity, With<crate::orbit_camera::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
     sim_dim: Res<State<SimulationDimension>>,
+    world: &World,
 ) {
     if ev.is_empty() {
         return;
@@ -951,7 +952,10 @@ fn handle_reset_sim(
 
     // Safe despawn helper that ensures we don't try to despawn entities that don't exist
     let safe_despawn = |entity: Entity, commands: &mut Commands| {
-        commands.entity(entity).despawn_recursive();
+        // Only attempt to despawn if the entity exists in the world
+        if world.get_entity(entity).is_ok() {
+            commands.entity(entity).despawn();
+        }
     };
 
     // Log counts for debugging
