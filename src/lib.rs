@@ -34,6 +34,8 @@ pub fn app() -> App {
         .add_plugins(gpu_fluid::GpuFluidPlugin)
         .add_plugins(spawner::SpawnerPlugin)
         .add_plugins(reordering::ParticleReorderingPlugin)
+        .add_plugins(gpu_render3d::GpuRender3DPlugin)
+        .add_plugins(gpu_fluid3d::GpuSim3DPlugin)
         .init_resource::<GpuParticles>();
     
     app
@@ -49,6 +51,8 @@ impl Plugin for FluidPlugin {
             simulation::SimulationPlugin,
             gpu_fluid::GpuFluidPlugin,
             reordering::ParticleReorderingPlugin,
+            gpu_render3d::GpuRender3DPlugin,
+            gpu_fluid3d::GpuSim3DPlugin,
         ));
     }
 } 

@@ -113,18 +113,13 @@ pub fn spawn_particles_3d(
         return;
     }
 
-    // Create shared mesh & material
+    // Create shared mesh - but NOT shared material
     let sphere_mesh = meshes.add(
         Sphere::new(PARTICLE_RADIUS)
             .mesh()
             .ico(2)
             .unwrap(),
     );
-    let base_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.1, 0.4, 1.0),
-        perceptual_roughness: 0.8,
-        ..default()
-    });
 
     // Calculate grid dimensions
     let size = spawn_region.max - spawn_region.min;
@@ -140,10 +135,17 @@ pub fn spawn_particles_3d(
                     spawn_region.min.y + yi as f32 * spawn_region.spacing,
                     spawn_region.min.z + zi as f32 * spawn_region.spacing,
                 );
+                
+                // Create a unique material for each particle
+                let material = materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.1, 0.4, 1.0),
+                    perceptual_roughness: 0.8,
+                    ..default()
+                });
 
                 commands.spawn((
                     Mesh3d(sphere_mesh.clone()),
-                    MeshMaterial3d(base_material.clone()),
+                    MeshMaterial3d(material),
                     Transform::from_translation(pos),
                     Particle3D {
                         velocity: Vec3::ZERO,
@@ -406,14 +408,47 @@ pub fn recycle_particles_3d(
 pub fn update_particle_colors_3d(
     mut materials: ResMut<Assets<StandardMaterial>>,
     particles: Query<(&Particle3D, &MeshMaterial3d<StandardMaterial>)>,
+    time: Res<Time>,
 ) {
+    // Adjusted maximum velocity for normalization to match actual simulation velocity values
+    const MAX_VELOCITY: f32 = 700.0;
+    
+    // Debug info
+    let mut total_magnitude = 0.0;
+    let mut count = 0;
+    let mut max_seen: f32 = 0.0;
+    
     for (particle, mat_handle) in particles.iter() {
-        let speed = particle.velocity.length();
-        // map speed to color ramp (blue->red)
-        let t = (speed / 300.0).clamp(0.0, 1.0);
-        let color = Color::srgb(t, 0.2, 1.0 - t);
+        // Calculate velocity magnitude and normalize
+        let velocity_magnitude = particle.velocity.length();
+        total_magnitude += velocity_magnitude;
+        count += 1;
+        max_seen = max_seen.max(velocity_magnitude);
+        
+        let normalized_velocity = (velocity_magnitude / MAX_VELOCITY).clamp(0.0, 1.0);
+        
+        // Create a blue -> green -> red gradient based on velocity
+        let color = if normalized_velocity < 0.5 {
+            // Blue to green
+            let local_t = normalized_velocity * 2.0;
+            Color::srgb(0.0, local_t, 1.0 - local_t)
+        } else {
+            // Green to red
+            let local_t = (normalized_velocity - 0.5) * 2.0;
+            Color::srgb(local_t, 1.0 - local_t, 0.0)
+        };
+        
+        // Apply the color to the material
         if let Some(mat) = materials.get_mut(&mat_handle.0) {
             mat.base_color = color;
         }
+    }
+    
+    // Only print debug info occasionally to avoid flooding the console
+    if count > 0 && ((time.elapsed_secs_f64() % 2.0) < 0.1) {
+        println!("3D Particles - Avg velocity: {:.2}, Max velocity: {:.2}, Using MAX_VELOCITY={:.2} for normalization", 
+                 total_magnitude / count as f32, 
+                 max_seen,
+                 MAX_VELOCITY);
     }
 } 
