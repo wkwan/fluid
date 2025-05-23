@@ -1,8 +1,11 @@
-This is a Bevy/Rust implementation of https://github.com/SebLague/Fluid-Sim
+# Purpose
+To experiment with different techniques for fluid simulation and rendering in Rust/Bevy by making a beautiful realistic lake drawing toy.
 
-The purpose is to experiment with different techniques for fluid simulation and rendering.
+Kanban board: https://github.com/users/wkwan/projects/2
 
-To run demo:
+Currently it's just a Bevy/Rust implementation of https://github.com/SebLague/Fluid-Sim
+
+# To run demo:
 ```
 cargo run --release
 ```
