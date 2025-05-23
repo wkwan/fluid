@@ -1,5 +1,5 @@
 # Purpose
-To experiment with different techniques for fluid simulation and rendering in Rust/Bevy by making a beautiful realistic lake drawing toy.
+To experiment with different techniques for real-time fluid simulation and rendering in Rust/Bevy by making a beautiful realistic lake drawing toy.
 
 Kanban board: https://github.com/users/wkwan/projects/2
 
