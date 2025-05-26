@@ -4,7 +4,7 @@ use bevy::pbr::MeshMaterial3d;
 use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
-use rand;
+use rand::{self, Rng};
 use serde::{Serialize, Deserialize};
 
 // 3D particle component
@@ -24,6 +24,14 @@ pub struct Marker3D;
 // Marker for the ground plane
 #[derive(Component)]
 pub struct GroundPlane;
+
+// Component for solid rubber ducks that interact with particles
+#[derive(Component)]
+pub struct RubberDuck {
+    pub velocity: Vec3,
+    pub angular_velocity: Vec3, // Rotation velocity in radians per second
+    pub size: f32,
+}
 
 #[derive(Component)]
 pub struct MouseIndicator;
@@ -58,8 +66,10 @@ const GRAVITY_3D: Vec3 = Vec3::new(0.0, -9.81, 0.0);
 pub const BOUNDARY_MIN: Vec3 = Vec3::new(-300.0, -300.0, -300.0);
 pub const BOUNDARY_MAX: Vec3 = Vec3::new(300.0, 300.0, 300.0);
 const PARTICLE_RADIUS: f32 = 5.0;
+const DUCK_SIZE: f32 = PARTICLE_RADIUS * 5.0; // 5x bigger than particles
 const BOUNDARY_DAMPENING: f32 = 0.3;
 const KILL_Y_THRESHOLD: f32 = -400.0; // Below this Y value, particles are recycled
+const MAX_ANGULAR_VELOCITY: f32 = 3.0; // Maximum angular velocity in radians per second
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Fluid3DParams {
@@ -624,7 +634,7 @@ pub fn update_mouse_indicator_3d(
 
     if mouse_interaction_3d.active {
         // Update or create indicator
-        if let Ok((_, mut transform)) = indicator_query.get_single_mut() {
+        if let Ok((_, mut transform)) = indicator_query.single_mut() {
             // Update existing indicator position
             transform.translation = mouse_interaction_3d.position;
         } else {
@@ -660,6 +670,288 @@ pub fn update_mouse_indicator_3d(
         // Remove indicator when not active
         for (entity, _) in indicator_query.iter() {
             commands.entity(entity).despawn();
+        }
+    }
+}
+
+pub fn spawn_duck_at_cursor(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut spawn_duck_ev: EventReader<crate::simulation::SpawnDuck>,
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+    sim_dim: Res<State<SimulationDimension>>,
+    asset_server: Res<AssetServer>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        spawn_duck_ev.clear();
+        return;
+    }
+
+    for _ in spawn_duck_ev.read() {
+        // Get cursor position and convert to world space
+        if let Some(window) = windows.iter().next() {
+            if let Some(cursor_position) = window.cursor_position() {
+                if let Ok((camera, camera_transform)) = camera_q.single() {
+                    // Convert screen position to world ray
+                    if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
+                        // Project ray to a reasonable distance (middle of spawn region)
+                        let spawn_distance = 150.0; // Distance from camera to spawn duck
+                        let spawn_position = ray.origin + *ray.direction * spawn_distance;
+                        
+                        // Calculate initial velocity based on camera direction
+                        let camera_forward = camera_transform.forward();
+                        let initial_velocity = camera_forward.as_vec3() * 200.0; // Launch speed
+                        
+                        // Load rubber duck model
+                        spawn_rubber_duck_model(&mut commands, &mut meshes, &mut materials, &asset_server, spawn_position, initial_velocity);
+                        
+                        info!("Spawned rubber duck at position: {:?} with velocity: {:?}", spawn_position, initial_velocity);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn spawn_rubber_duck_model(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    asset_server: &Res<AssetServer>,
+    position: Vec3,
+    velocity: Vec3,
+) {
+    // Try to load the rubber duck model from assets
+    // For now, we'll create a simple duck-like shape using primitives
+    // This can be replaced with actual model loading when a GLTF file is available
+    
+    // Create a yellow material for the duck
+    let duck_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.9, 0.0), // Bright yellow
+        perceptual_roughness: 0.4,
+        metallic: 0.0,
+        ..default()
+    });
+    
+    // Create a simple duck shape using a sphere (body) and smaller sphere (head)
+    let body_mesh = meshes.add(
+        Sphere::new(DUCK_SIZE * 0.4)
+            .mesh()
+            .ico(3)
+            .unwrap()
+    );
+    
+    // Spawn the main duck entity with initial angular velocity (much slower)
+    let initial_angular_velocity = Vec3::new(
+        (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around X axis
+        (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around Y axis
+        (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around Z axis
+    );
+    
+    let duck_entity = commands.spawn((
+        Transform::from_translation(position),
+        RubberDuck {
+            velocity,
+            angular_velocity: initial_angular_velocity,
+            size: DUCK_SIZE,
+        },
+        Marker3D,
+    )).id();
+    
+    // Add the body as a child
+    let body_entity = commands.spawn((
+        Mesh3d(body_mesh),
+        MeshMaterial3d(duck_material.clone()),
+        Transform::from_translation(Vec3::ZERO)
+            .with_scale(Vec3::new(1.2, 0.8, 1.0)), // Flatten slightly for duck body
+    )).id();
+    
+    // Add a head
+    let head_mesh = meshes.add(
+        Sphere::new(DUCK_SIZE * 0.25)
+            .mesh()
+            .ico(3)
+            .unwrap()
+    );
+    
+    let head_entity = commands.spawn((
+        Mesh3d(head_mesh),
+        MeshMaterial3d(duck_material),
+        Transform::from_translation(Vec3::new(0.0, DUCK_SIZE * 0.3, DUCK_SIZE * 0.3)),
+    )).id();
+    
+    // Attach body and head to the main duck entity
+    commands.entity(duck_entity).add_children(&[body_entity, head_entity]);
+}
+
+pub fn update_duck_physics(
+    time: Res<Time>,
+    mut ducks: Query<(&mut Transform, &mut RubberDuck)>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        return;
+    }
+
+    let dt = time.delta_secs();
+    
+    for (mut transform, mut duck) in ducks.iter_mut() {
+        // Apply gravity
+        duck.velocity += GRAVITY_3D * dt;
+        
+        // Update position
+        transform.translation += duck.velocity * dt;
+        
+        // Update rotation based on angular velocity
+        let rotation_delta = Quat::from_scaled_axis(duck.angular_velocity * dt);
+        transform.rotation = rotation_delta * transform.rotation;
+        
+        // Add angular damping (air resistance) - stronger damping for smoother motion
+        duck.angular_velocity *= 0.95;
+        
+        // Handle boundary collisions
+        let half_size = duck.size * 0.5;
+        let mut pos = transform.translation;
+        let mut vel = duck.velocity;
+        let mut angular_vel = duck.angular_velocity;
+
+        // X-axis boundaries
+        if pos.x - half_size < BOUNDARY_MIN.x {
+            pos.x = BOUNDARY_MIN.x + half_size;
+            vel.x = -vel.x * BOUNDARY_DAMPENING;
+            // Add gentle spin when hitting walls
+            angular_vel.y += vel.x * 0.02;
+            angular_vel.z += vel.x * 0.01;
+        } else if pos.x + half_size > BOUNDARY_MAX.x {
+            pos.x = BOUNDARY_MAX.x - half_size;
+            vel.x = -vel.x * BOUNDARY_DAMPENING;
+            // Add gentle spin when hitting walls
+            angular_vel.y += vel.x * 0.02;
+            angular_vel.z += vel.x * 0.01;
+        }
+
+        // Y-axis boundaries
+        if pos.y - half_size < BOUNDARY_MIN.y {
+            pos.y = BOUNDARY_MIN.y + half_size;
+            vel.y = -vel.y * BOUNDARY_DAMPENING;
+            // Add gentle tumbling when hitting ground/ceiling
+            angular_vel.x += vel.y * 0.02;
+            angular_vel.z += vel.y * 0.02;
+        } else if pos.y + half_size > BOUNDARY_MAX.y {
+            pos.y = BOUNDARY_MAX.y - half_size;
+            vel.y = -vel.y * BOUNDARY_DAMPENING;
+            // Add gentle tumbling when hitting ground/ceiling
+            angular_vel.x += vel.y * 0.02;
+            angular_vel.z += vel.y * 0.02;
+        }
+
+        // Z-axis boundaries
+        if pos.z - half_size < BOUNDARY_MIN.z {
+            pos.z = BOUNDARY_MIN.z + half_size;
+            vel.z = -vel.z * BOUNDARY_DAMPENING;
+            // Add gentle spin when hitting walls
+            angular_vel.x += vel.z * 0.02;
+            angular_vel.y += vel.z * 0.01;
+        } else if pos.z + half_size > BOUNDARY_MAX.z {
+            pos.z = BOUNDARY_MAX.z - half_size;
+            vel.z = -vel.z * BOUNDARY_DAMPENING;
+            // Add gentle spin when hitting walls
+            angular_vel.x += vel.z * 0.02;
+            angular_vel.y += vel.z * 0.01;
+        }
+
+        // Apply velocity-based rotation (gentle tumbling through air)
+        let velocity_magnitude = vel.length();
+        if velocity_magnitude > 50.0 {
+            // Add subtle rotation based on movement direction for realistic tumbling
+            let velocity_normalized = vel.normalize();
+            angular_vel += velocity_normalized.cross(Vec3::Y) * 0.005 * (velocity_magnitude / 100.0).min(1.0);
+        }
+
+        // Clamp angular velocity to prevent excessive spinning
+        angular_vel = angular_vel.clamp_length_max(MAX_ANGULAR_VELOCITY);
+        
+        transform.translation = pos;
+        duck.velocity = vel;
+        duck.angular_velocity = angular_vel;
+    }
+}
+
+pub fn handle_particle_duck_collisions(
+    mut particles: Query<(&mut Transform, &mut Particle3D), Without<RubberDuck>>,
+    mut ducks: Query<(&Transform, &mut RubberDuck), Without<Particle3D>>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        return;
+    }
+
+    for (mut particle_transform, mut particle) in particles.iter_mut() {
+        for (duck_transform, mut duck) in ducks.iter_mut() {
+            let particle_pos = particle_transform.translation;
+            let duck_pos = duck_transform.translation;
+            let half_duck_size = duck.size * 0.5;
+            
+            // Check if particle is inside or near the duck (using AABB collision)
+            let diff = particle_pos - duck_pos;
+            let abs_diff = diff.abs();
+            
+            // Check if particle is within duck bounds + particle radius
+            if abs_diff.x < half_duck_size + PARTICLE_RADIUS &&
+               abs_diff.y < half_duck_size + PARTICLE_RADIUS &&
+               abs_diff.z < half_duck_size + PARTICLE_RADIUS {
+                
+                // Find the closest face of the duck
+                let penetration_x = (half_duck_size + PARTICLE_RADIUS) - abs_diff.x;
+                let penetration_y = (half_duck_size + PARTICLE_RADIUS) - abs_diff.y;
+                let penetration_z = (half_duck_size + PARTICLE_RADIUS) - abs_diff.z;
+                
+                // Find the axis with minimum penetration (closest face)
+                let min_penetration = penetration_x.min(penetration_y).min(penetration_z);
+                
+                let mut normal = Vec3::ZERO;
+                let mut penetration = 0.0;
+                
+                if min_penetration == penetration_x {
+                    normal.x = if diff.x > 0.0 { 1.0 } else { -1.0 };
+                    penetration = penetration_x;
+                } else if min_penetration == penetration_y {
+                    normal.y = if diff.y > 0.0 { 1.0 } else { -1.0 };
+                    penetration = penetration_y;
+                } else {
+                    normal.z = if diff.z > 0.0 { 1.0 } else { -1.0 };
+                    penetration = penetration_z;
+                }
+                
+                // Push particle out of duck
+                particle_transform.translation += normal * penetration;
+                
+                // Apply collision response
+                let relative_velocity = particle.velocity - duck.velocity;
+                let velocity_along_normal = relative_velocity.dot(normal);
+                
+                // Only resolve if objects are moving towards each other
+                if velocity_along_normal < 0.0 {
+                    let restitution = 0.3; // Bounce factor
+                    let impulse = -(1.0 + restitution) * velocity_along_normal;
+                    
+                    // Apply impulse to particle (duck is much heavier, so it doesn't move much)
+                    particle.velocity += normal * impulse;
+                    
+                    // Add some friction
+                    let friction = 0.1;
+                    let tangent_velocity = relative_velocity - normal * velocity_along_normal;
+                    particle.velocity -= tangent_velocity * friction;
+                    
+                    // Add gentle angular velocity to duck based on collision
+                    let collision_point = particle_pos - duck_pos;
+                    let impulse_vector = normal * impulse * 0.02; // Much smaller effect
+                    let torque = collision_point.cross(impulse_vector);
+                    duck.angular_velocity += torque * 0.1; // Apply gentle torque to angular velocity
+                }
+            }
         }
     }
 }

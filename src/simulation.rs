@@ -84,6 +84,7 @@ impl Plugin for SimulationPlugin {
             .add_systems(Startup, load_presets_system)
            .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
+            .add_event::<SpawnDuck>()
            .add_systems(Update, handle_input)
             // ===== 2D Systems =====
            .add_systems(Update, (
@@ -115,6 +116,10 @@ impl Plugin for SimulationPlugin {
                     .chain()
                     .run_if(in_state(SimulationDimension::Dim3)),
             )
+            // ===== 3D Duck Systems =====
+            .add_systems(Update, crate::simulation3d::spawn_duck_at_cursor.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::simulation3d::update_duck_physics.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::simulation3d::handle_particle_duck_collisions.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, crate::simulation3d::update_particle_colors_3d.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, update_mouse_indicator_3d.run_if(in_state(SimulationDimension::Dim3)))
            .add_systems(Update, update_particle_colors)
@@ -135,7 +140,9 @@ impl Plugin for SimulationPlugin {
             .add_systems(OnEnter(SimulationDimension::Dim2), crate::orbit_camera::despawn_orbit_camera)
             .add_systems(OnEnter(SimulationDimension::Dim3), despawn_2d_camera)
             // Preset hotkey
-            .add_systems(Update, preset_hotkey_3d);
+            .add_systems(Update, preset_hotkey_3d)
+            // Handle duck spawning with spacebar in 3D mode
+            .add_systems(Update, handle_duck_spawning);
     }
 }
 
@@ -424,6 +431,8 @@ fn handle_input(
         }
     }
     
+
+    
     // tick cooldown
     toggle_cooldown.timer.tick(time.delta());
 
@@ -480,7 +489,7 @@ fn update_settings_text(
         [K/J] Max Speed: {:.1}\n\
         {}\n\n\
         [Z] Toggle Dimension (current: {})
-        \n\
+        {}\n\
         [X] Reset to Defaults",
         if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.smoothing_radius
@@ -515,7 +524,8 @@ fn update_settings_text(
         } else {
             String::new()
         },
-        if *sim_dim.get() == SimulationDimension::Dim2 { "2D" } else { "3D" }
+        if *sim_dim.get() == SimulationDimension::Dim2 { "2D" } else { "3D" },
+        if *sim_dim.get() == SimulationDimension::Dim3 { "\n[Space] Spawn Duck" } else { "" }
     );
 }
 
@@ -941,12 +951,16 @@ pub enum SimulationDimension {
 #[derive(Event)]
 pub struct ResetSim;
 
+#[derive(Event)]
+pub struct SpawnDuck;
+
 fn handle_reset_sim(
     mut ev: EventReader<ResetSim>,
     mut commands: Commands,
     q_particles2d: Query<Entity, With<Particle>>,
     q_particles3d: Query<Entity, With<crate::simulation3d::Particle3D>>,
     q_marker3d: Query<Entity, With<crate::simulation3d::Marker3D>>,
+    q_ducks: Query<Entity, With<crate::simulation3d::RubberDuck>>,
     q_orbit: Query<Entity, With<crate::orbit_camera::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
     q_cam2d: Query<Entity, With<crate::orbit_camera::Camera2DMarker>>,
@@ -970,8 +984,9 @@ fn handle_reset_sim(
     let p2d_count = q_particles2d.iter().count();
     let p3d_count = q_particles3d.iter().count();
     let marker_count = q_marker3d.iter().count();
-    info!("Cleaning up: {}x 2D particles, {}x 3D particles, {}x 3D markers", 
-          p2d_count, p3d_count, marker_count);
+    let duck_count = q_ducks.iter().count();
+    info!("Cleaning up: {}x 2D particles, {}x 3D particles, {}x 3D markers, {}x ducks", 
+          p2d_count, p3d_count, marker_count, duck_count);
 
     // Always clean up all particle types and associated entities to ensure a fresh state.
     for e in q_particles2d.iter() {
@@ -983,6 +998,10 @@ fn handle_reset_sim(
     }
     
     for e in q_marker3d.iter() {
+        safe_despawn(e, &mut commands);
+    }
+    
+    for e in q_ducks.iter() {
         safe_despawn(e, &mut commands);
     }
     
@@ -1023,5 +1042,20 @@ fn preset_hotkey_3d(
             *fluid3d_params = p.params.clone();
             info!("Loaded preset: {}", p.name);
         }
+    }
+}
+
+// Handle cube spawning with spacebar in 3D mode
+fn handle_duck_spawning(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut spawn_duck_ev: EventWriter<SpawnDuck>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::Space) {
+        spawn_duck_ev.write(SpawnDuck);
     }
 }
