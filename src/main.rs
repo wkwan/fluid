@@ -29,5 +29,5 @@ fn main() {
 }
 
 fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d::default());
+    // Camera spawning is now handled by dimension-specific systems
 } 

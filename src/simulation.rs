@@ -3,7 +3,7 @@ use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, DiagnosticsStore};
 use crate::math::FluidMath;
 use crate::spatial_hash::SpatialHash;
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
-use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera};
+use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera, spawn_2d_camera, despawn_2d_camera};
 use bevy::prelude::Camera3d;
 use crate::simulation3d::{
     apply_external_forces_3d, apply_pressure_viscosity_3d, calculate_density_pressure_3d,
@@ -123,10 +123,13 @@ impl Plugin for SimulationPlugin {
                 spawn_orbit_camera,
                 control_orbit_camera,
             ).run_if(in_state(SimulationDimension::Dim3)))
-            // Orbit camera cleanup when returning to 2D
+            // 2D camera (2D only)
             .add_systems(Update, (
-                crate::orbit_camera::despawn_orbit_camera,
+                spawn_2d_camera,
             ).run_if(in_state(SimulationDimension::Dim2)))
+            // Camera cleanup when switching dimensions - run on state transitions
+            .add_systems(OnEnter(SimulationDimension::Dim2), crate::orbit_camera::despawn_orbit_camera)
+            .add_systems(OnEnter(SimulationDimension::Dim3), despawn_2d_camera)
             // Preset hotkey
             .add_systems(Update, preset_hotkey_3d);
     }
@@ -926,8 +929,8 @@ fn track_max_velocity(
 #[derive(States, Reflect, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 #[reflect(State)]
 pub enum SimulationDimension {
-    #[default]
     Dim2,
+    #[default]
     Dim3,
 }
 
@@ -942,6 +945,7 @@ fn handle_reset_sim(
     q_marker3d: Query<Entity, With<crate::simulation3d::Marker3D>>,
     q_orbit: Query<Entity, With<crate::orbit_camera::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
+    q_cam2d: Query<Entity, With<crate::orbit_camera::Camera2DMarker>>,
     sim_dim: Res<State<SimulationDimension>>,
     world: &World,
 ) {
@@ -983,6 +987,10 @@ fn handle_reset_sim(
     }
     
     for e in q_cam3d.iter() {
+        safe_despawn(e, &mut commands);
+    }
+    
+    for e in q_cam2d.iter() {
         safe_despawn(e, &mut commands);
     }
     

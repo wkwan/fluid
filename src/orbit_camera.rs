@@ -9,6 +9,10 @@ pub struct OrbitCamera {
     distance: f32,
 }
 
+// Marker component for 2D camera
+#[derive(Component)]
+pub struct Camera2DMarker;
+
 /// Constants for zoom limits computed from simulation bounds
 const MIN_ZOOM: f32 = 50.0;
 const MAX_ZOOM: f32 = 1000.0; // Upper zoom limit
@@ -43,17 +47,16 @@ pub fn despawn_orbit_camera(
     mut commands: Commands,
     sim_dim: Res<State<SimulationDimension>>,
     query: Query<Entity, With<OrbitCamera>>,
-    world: &World,
 ) {
-    if *sim_dim.get() == SimulationDimension::Dim2 {
-        let count = query.iter().count();
+    if *sim_dim.get() != SimulationDimension::Dim2 {
+        return;
+    }
+    
+    let count = query.iter().count();
+    if count > 0 {
         info!("Cleaning up {} orbit cameras in 2D mode", count);
-        
-        for e in query.iter() {
-            // Only attempt to despawn if the entity exists in the world
-            if world.get_entity(e).is_ok() {
-                commands.entity(e).despawn();
-            }
+        for entity in query.iter() {
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -101,4 +104,40 @@ pub fn control_orbit_camera(
                                0.0);
     transform.translation = rot * Vec3::Z * cam.distance;
     transform.look_at(Vec3::ZERO, Vec3::Y);
+}
+
+/// Spawn a 2D camera when entering 2D mode (if none exists).
+pub fn spawn_2d_camera(
+    mut commands: Commands,
+    sim_dim: Res<State<SimulationDimension>>,
+    existing: Query<(), With<Camera2DMarker>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim2 || !existing.is_empty() {
+        return;
+    }
+
+    commands.spawn((
+        Camera2d::default(),
+        Camera2DMarker,
+    ));
+    info!("Spawned 2D camera");
+}
+
+/// Despawn 2D camera when leaving 2D mode.
+pub fn despawn_2d_camera(
+    mut commands: Commands,
+    sim_dim: Res<State<SimulationDimension>>,
+    existing: Query<Entity, With<Camera2DMarker>>,
+) {
+    if *sim_dim.get() == SimulationDimension::Dim2 {
+        return;
+    }
+
+    let count = existing.iter().count();
+    if count > 0 {
+        info!("Cleaning up {} 2D cameras in 3D mode", count);
+        for entity in existing.iter() {
+            commands.entity(entity).despawn();
+        }
+    }
 } 
