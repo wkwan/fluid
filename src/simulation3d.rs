@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy::math::primitives::Sphere;
+use bevy::math::primitives::{Sphere, Plane3d};
 use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
@@ -20,6 +20,10 @@ pub struct Particle3D {
 // Marker for 3D entities to allow cleanup
 #[derive(Component)]
 pub struct Marker3D;
+
+// Marker for the ground plane
+#[derive(Component)]
+pub struct GroundPlane;
 
 // Constants for 3D sim (match 2D values where possible)
 const GRAVITY_3D: Vec3 = Vec3::new(0.0, -9.81, 0.0);
@@ -70,8 +74,11 @@ impl Default for SpawnRegion3D {
 // ======================== SETUP ============================
 pub fn setup_3d_environment(
     mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     _asset_server: Res<AssetServer>,
     query_cam: Query<(), With<Camera3d>>, // only spawn if none
+    query_ground: Query<(), With<GroundPlane>>, // check if ground already exists
     sim_dim: Res<State<SimulationDimension>>,
 ) {
     if sim_dim.get() != &SimulationDimension::Dim3 {
@@ -93,6 +100,31 @@ pub fn setup_3d_environment(
         GlobalTransform::default(),
         Marker3D,
     ));
+
+    // Add ground plane if it doesn't exist
+    if query_ground.is_empty() {
+        let ground_size = (BOUNDARY_MAX.x - BOUNDARY_MIN.x) * 1.2; // Make it slightly larger than boundaries
+        let ground_mesh = meshes.add(
+            Plane3d::default()
+                .mesh()
+                .size(ground_size, ground_size)
+        );
+        
+        let ground_material = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.6, 0.4, 0.2), // Brown color
+            perceptual_roughness: 0.9,
+            metallic: 0.0,
+            ..default()
+        });
+
+        commands.spawn((
+            Mesh3d(ground_mesh),
+            MeshMaterial3d(ground_material),
+            Transform::from_xyz(0.0, BOUNDARY_MIN.y, 0.0), // Position at bottom boundary
+            GroundPlane,
+            Marker3D,
+        ));
+    }
 }
 
 // ======================== SPAWNER ==========================
