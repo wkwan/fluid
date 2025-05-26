@@ -25,6 +25,31 @@ pub struct Marker3D;
 #[derive(Component)]
 pub struct GroundPlane;
 
+#[derive(Component)]
+pub struct MouseIndicator;
+
+// 3D Mouse interaction resource
+#[derive(Resource, Clone)]
+pub struct MouseInteraction3D {
+    pub position: Vec3,
+    pub active: bool,
+    pub repel: bool,
+    pub strength: f32,
+    pub radius: f32,
+}
+
+impl Default for MouseInteraction3D {
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            active: false,
+            repel: false,
+            strength: 10000.0,  // Increased from 1000.0
+            radius: 150.0,     // Increased from 50.0
+        }
+    }
+}
+
 // Constants for 3D sim (match 2D values where possible)
 const GRAVITY_3D: Vec3 = Vec3::new(0.0, -9.81, 0.0);
 pub const BOUNDARY_MIN: Vec3 = Vec3::new(-300.0, -300.0, -300.0);
@@ -195,18 +220,108 @@ pub fn spawn_particles_3d(
 
 // =================== PHYSICS SYSTEMS =======================
 
+pub fn handle_mouse_input_3d(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+    mut mouse_interaction_3d: ResMut<MouseInteraction3D>,
+    sim_dim: Res<State<SimulationDimension>>,
+    particles: Query<&Transform, With<Particle3D>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        return;
+    }
+
+    // Handle mouse interaction
+    if let Some(window) = windows.iter().next() {
+        if let Some(cursor_position) = window.cursor_position() {
+            if let Ok((camera, camera_transform)) = camera_q.single() {
+                // Convert screen position to world ray
+                if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
+                    // Find the closest particle to the ray to determine interaction depth
+                    let mut closest_distance = f32::INFINITY;
+                    let mut best_position = Vec3::ZERO;
+                    
+                    // Check all particles to find the one closest to the ray
+                    for particle_transform in particles.iter() {
+                        let particle_pos = particle_transform.translation;
+                        
+                        // Calculate distance from particle to ray
+                        let to_particle = particle_pos - ray.origin;
+                        let projection_length = to_particle.dot(*ray.direction);
+                        let closest_point_on_ray = ray.origin + *ray.direction * projection_length;
+                        let distance_to_ray = (particle_pos - closest_point_on_ray).length();
+                        
+                        // If this particle is closer to the ray and within reasonable distance
+                        if distance_to_ray < closest_distance && distance_to_ray < 200.0 {
+                            closest_distance = distance_to_ray;
+                            best_position = closest_point_on_ray;
+                        }
+                    }
+                    
+                    // If we found a good particle, use that position
+                    // Otherwise, fall back to projecting to the middle of the spawn region
+                    if closest_distance < 200.0 {
+                        mouse_interaction_3d.position = best_position;
+                    } else {
+                        // Fallback: project to Y=150 (middle of spawn region)
+                        let interaction_plane_y = 150.0;
+                        let t = if ray.direction.y.abs() > 0.001 {
+                            (interaction_plane_y - ray.origin.y) / ray.direction.y
+                        } else {
+                            100.0
+                        };
+                        mouse_interaction_3d.position = ray.origin + *ray.direction * t;
+                    }
+                }
+            }
+        }
+    }
+
+    // Update mouse interaction state
+    mouse_interaction_3d.active = mouse_buttons.pressed(MouseButton::Left) || 
+                                  mouse_buttons.pressed(MouseButton::Right);
+    mouse_interaction_3d.repel = mouse_buttons.pressed(MouseButton::Right);
+}
+
 pub fn apply_external_forces_3d(
     time: Res<Time>,
-    mut particles: Query<&mut Particle3D>,
+    mouse_interaction_3d: Res<MouseInteraction3D>,
+    mut particles: Query<(&Transform, &mut Particle3D)>,
     sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
         return;
     }
 
     let dt = time.delta_secs();
-    for mut p in particles.iter_mut() {
-        p.velocity += GRAVITY_3D * dt;
+    
+    for (transform, mut particle) in particles.iter_mut() {
+        // Apply gravity
+        particle.velocity += GRAVITY_3D * dt;
+        
+        // Apply mouse force if active
+        if mouse_interaction_3d.active {
+            let direction = mouse_interaction_3d.position - transform.translation;
+            let distance = direction.length();
+            
+            if distance < mouse_interaction_3d.radius {
+                let force_direction = if mouse_interaction_3d.repel { -direction } else { direction };
+                
+                // Use a smoother falloff function for more natural interaction
+                let distance_ratio = distance / mouse_interaction_3d.radius;
+                let falloff = (1.0 - distance_ratio).powi(2); // Quadratic falloff
+                let force_strength = mouse_interaction_3d.strength * falloff;
+                
+                if distance > 0.001 { // Avoid division by zero
+                    let force = force_direction.normalize() * force_strength * dt;
+                    particle.velocity += force;
+                    
+                    // Add some damping to prevent excessive velocities
+                    particle.velocity *= 0.98;
+                }
+            }
+        }
     }
 }
 
@@ -482,5 +597,63 @@ pub fn update_particle_colors_3d(
                  total_magnitude / count as f32, 
                  max_seen,
                  MAX_VELOCITY);
+    }
+}
+
+pub fn update_mouse_indicator_3d(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mouse_interaction_3d: Res<MouseInteraction3D>,
+    mut indicator_query: Query<(Entity, &mut Transform), With<MouseIndicator>>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        // Remove indicator if not in 3D mode
+        for (entity, _) in indicator_query.iter() {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+
+    if mouse_interaction_3d.active {
+        // Update or create indicator
+        if let Ok((_, mut transform)) = indicator_query.get_single_mut() {
+            // Update existing indicator position
+            transform.translation = mouse_interaction_3d.position;
+        } else {
+            // Create new indicator
+            let indicator_mesh = meshes.add(
+                Sphere::new(mouse_interaction_3d.radius * 0.1) // Small sphere to show interaction point
+                    .mesh()
+                    .ico(2)
+                    .unwrap(),
+            );
+            
+            let indicator_material = materials.add(StandardMaterial {
+                base_color: if mouse_interaction_3d.repel { 
+                    Color::srgb(1.0, 0.2, 0.2) // Red for repel
+                } else { 
+                    Color::srgb(0.2, 1.0, 0.2) // Green for attract
+                },
+                emissive: LinearRgba::rgb(0.5, 0.5, 0.5),
+                perceptual_roughness: 0.1,
+                metallic: 0.8,
+                ..default()
+            });
+
+            commands.spawn((
+                Mesh3d(indicator_mesh),
+                MeshMaterial3d(indicator_material),
+                Transform::from_translation(mouse_interaction_3d.position),
+                MouseIndicator,
+                Marker3D,
+            ));
+        }
+    } else {
+        // Remove indicator when not active
+        for (entity, _) in indicator_query.iter() {
+            commands.entity(entity).despawn();
+        }
     }
 } 

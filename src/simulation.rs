@@ -8,7 +8,8 @@ use bevy::prelude::Camera3d;
 use crate::simulation3d::{
     apply_external_forces_3d, apply_pressure_viscosity_3d, calculate_density_pressure_3d,
     integrate_positions_3d, setup_3d_environment, spawn_particles_3d, update_spatial_hash_3d,
-    Fluid3DParams, Marker3D, Particle3D, SpawnRegion3D, recycle_particles_3d,
+    Fluid3DParams, Marker3D, Particle3D, SpawnRegion3D, recycle_particles_3d, MouseInteraction3D,
+    handle_mouse_input_3d, update_mouse_indicator_3d,
 };
 use crate::spatial_hash3d::SpatialHashResource3D;
 use bevy::prelude::{States, Reflect};
@@ -77,6 +78,7 @@ impl Plugin for SimulationPlugin {
             .init_resource::<Fluid3DParams>()
             .init_resource::<SpawnRegion3D>()
             .init_resource::<SpatialHashResource3D>()
+            .init_resource::<MouseInteraction3D>()
             .init_resource::<ToggleCooldown>()
             .init_resource::<PresetManager3D>()
             .add_systems(Startup, load_presets_system)
@@ -102,6 +104,7 @@ impl Plugin for SimulationPlugin {
             .add_systems(
                 Update,
                 (
+                    handle_mouse_input_3d,
                     apply_external_forces_3d,
                     update_spatial_hash_3d,
                     calculate_density_pressure_3d,
@@ -113,6 +116,7 @@ impl Plugin for SimulationPlugin {
                     .run_if(in_state(SimulationDimension::Dim3)),
             )
             .add_systems(Update, crate::simulation3d::update_particle_colors_3d.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, update_mouse_indicator_3d.run_if(in_state(SimulationDimension::Dim3)))
            .add_systems(Update, update_particle_colors)
            .add_systems(Update, update_fps_display)
            .add_systems(Update, handle_debug_ui_toggle)
