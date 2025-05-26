@@ -1,11 +1,11 @@
 use bevy::prelude::*;
 use bevy::math::primitives::{Sphere, Plane3d};
+use bevy::pbr::MeshMaterial3d;
 use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
 use rand;
 use serde::{Serialize, Deserialize};
-use bevy::pbr::MeshMaterial3d;
 
 // 3D particle component
 #[derive(Component)]
@@ -27,6 +27,9 @@ pub struct GroundPlane;
 
 #[derive(Component)]
 pub struct MouseIndicator;
+
+#[derive(Component)]
+pub struct BoundaryWireframe;
 
 // 3D Mouse interaction resource
 #[derive(Resource, Clone)]
@@ -150,6 +153,9 @@ pub fn setup_3d_environment(
             Marker3D,
         ));
     }
+
+    // Add boundary wireframe cube
+    create_boundary_wireframe(&mut commands, &mut meshes, &mut materials);
 }
 
 // ======================== SPAWNER ==========================
@@ -655,5 +661,80 @@ pub fn update_mouse_indicator_3d(
         for (entity, _) in indicator_query.iter() {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+fn create_boundary_wireframe(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+) {
+    // Create wireframe material
+    let wireframe_material = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 1.0, 1.0, 0.3), // Semi-transparent white
+        alpha_mode: AlphaMode::Blend,
+        unlit: true, // Make it unlit so it's always visible
+        cull_mode: None, // Render both sides
+        ..default()
+    });
+
+    // Define the 8 corners of the cube
+    let corners = [
+        Vec3::new(BOUNDARY_MIN.x, BOUNDARY_MIN.y, BOUNDARY_MIN.z), // 0: bottom-back-left
+        Vec3::new(BOUNDARY_MAX.x, BOUNDARY_MIN.y, BOUNDARY_MIN.z), // 1: bottom-back-right
+        Vec3::new(BOUNDARY_MAX.x, BOUNDARY_MIN.y, BOUNDARY_MAX.z), // 2: bottom-front-right
+        Vec3::new(BOUNDARY_MIN.x, BOUNDARY_MIN.y, BOUNDARY_MAX.z), // 3: bottom-front-left
+        Vec3::new(BOUNDARY_MIN.x, BOUNDARY_MAX.y, BOUNDARY_MIN.z), // 4: top-back-left
+        Vec3::new(BOUNDARY_MAX.x, BOUNDARY_MAX.y, BOUNDARY_MIN.z), // 5: top-back-right
+        Vec3::new(BOUNDARY_MAX.x, BOUNDARY_MAX.y, BOUNDARY_MAX.z), // 6: top-front-right
+        Vec3::new(BOUNDARY_MIN.x, BOUNDARY_MAX.y, BOUNDARY_MAX.z), // 7: top-front-left
+    ];
+
+    // Define the 12 edges of the cube (each edge connects two corners)
+    let edges = [
+        // Bottom face edges
+        (0, 1), (1, 2), (2, 3), (3, 0),
+        // Top face edges
+        (4, 5), (5, 6), (6, 7), (7, 4),
+        // Vertical edges
+        (0, 4), (1, 5), (2, 6), (3, 7),
+    ];
+
+    // Create a line mesh for each edge
+    for (start_idx, end_idx) in edges.iter() {
+        let start = corners[*start_idx];
+        let end = corners[*end_idx];
+        
+        // Create a thin cylinder to represent the line
+        let direction = end - start;
+        let length = direction.length();
+        let center = (start + end) * 0.5;
+        
+        // Create a thin cylinder mesh
+        let cylinder_mesh = meshes.add(
+            bevy::math::primitives::Cylinder::new(0.5, length) // Very thin radius
+                .mesh()
+        );
+        
+        // Calculate rotation to align cylinder with the edge direction
+        let up = Vec3::Y;
+        let rotation = if direction.normalize().dot(up).abs() > 0.99 {
+            // Handle case where direction is parallel to Y axis
+            if direction.y > 0.0 {
+                Quat::IDENTITY
+            } else {
+                Quat::from_rotation_z(std::f32::consts::PI)
+            }
+        } else {
+            Quat::from_rotation_arc(up, direction.normalize())
+        };
+        
+        commands.spawn((
+            Mesh3d(cylinder_mesh),
+            MeshMaterial3d(wireframe_material.clone()),
+            Transform::from_translation(center).with_rotation(rotation),
+            BoundaryWireframe,
+            Marker3D,
+        ));
     }
 } 
