@@ -9,7 +9,7 @@ use crate::simulation3d::{
     apply_external_forces_3d, apply_pressure_viscosity_3d, calculate_density_pressure_3d,
     integrate_positions_3d, setup_3d_environment, spawn_particles_3d, update_spatial_hash_3d,
     Fluid3DParams, Marker3D, Particle3D, SpawnRegion3D, recycle_particles_3d, MouseInteraction3D,
-    handle_mouse_input_3d, update_mouse_indicator_3d,
+    handle_mouse_input_3d, update_mouse_indicator_3d, handle_ground_deformation, GroundDeformationTimer,
 };
 use crate::spatial_hash3d::SpatialHashResource3D;
 use bevy::prelude::{States, Reflect};
@@ -24,6 +24,12 @@ pub struct ColorMapParams {
     pub min_speed: f32,
     pub max_speed: f32,
     pub use_velocity_color: bool,
+}
+
+// Resource to track Draw Lake mode state
+#[derive(Resource, Default)]
+pub struct DrawLakeMode {
+    pub enabled: bool,
 }
 
 impl Default for ColorMapParams {
@@ -75,17 +81,21 @@ impl Plugin for SimulationPlugin {
            .init_resource::<SpatialHashResource>()
            .init_resource::<DebugUiState>()
            .init_resource::<ColorMapParams>()
+           .init_resource::<DrawLakeMode>()
             .init_resource::<Fluid3DParams>()
             .init_resource::<SpawnRegion3D>()
             .init_resource::<SpatialHashResource3D>()
             .init_resource::<MouseInteraction3D>()
             .init_resource::<ToggleCooldown>()
             .init_resource::<PresetManager3D>()
+            .init_resource::<GroundDeformationTimer>()
             .add_systems(Startup, load_presets_system)
            .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
             .add_event::<SpawnDuck>()
            .add_systems(Update, handle_input)
+           .add_systems(Update, handle_draw_lake_toggle)
+           .add_systems(Update, handle_mouse_input_2d)
             // ===== 2D Systems =====
            .add_systems(Update, (
                apply_external_forces,
@@ -122,6 +132,7 @@ impl Plugin for SimulationPlugin {
             .add_systems(Update, crate::simulation3d::handle_particle_duck_collisions.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, crate::simulation3d::update_particle_colors_3d.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, update_mouse_indicator_3d.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, handle_ground_deformation.run_if(in_state(SimulationDimension::Dim3)))
            .add_systems(Update, update_particle_colors)
            .add_systems(Update, update_fps_display)
            .add_systems(Update, handle_debug_ui_toggle)
@@ -289,12 +300,49 @@ fn setup_simulation(mut commands: Commands) {
     ));
 }
 
-fn handle_input(
+// Separate system for handling Draw Lake mode toggle
+fn handle_draw_lake_toggle(
     keys: Res<ButtonInput<KeyCode>>,
+    mut draw_lake_mode: ResMut<DrawLakeMode>,
+) {
+    if keys.just_pressed(KeyCode::KeyL) {
+        draw_lake_mode.enabled = !draw_lake_mode.enabled;
+        info!("Draw Lake mode toggled: {}", draw_lake_mode.enabled);
+    }
+}
+
+// Separate system for mouse input handling
+fn handle_mouse_input_2d(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     mut mouse_interaction: ResMut<MouseInteraction>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
+    draw_lake_mode: Res<DrawLakeMode>,
+) {
+    // Handle mouse interaction (disabled when Draw Lake mode is active)
+    if let Some(window) = windows.iter().next() {
+        if let Some(cursor_position) = window.cursor_position() {
+            if let Ok((camera, camera_transform)) = camera_q.single() {
+                if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
+                    mouse_interaction.position = world_position;
+                    // Disable mouse forces when Draw Lake mode is active
+                    if !draw_lake_mode.enabled {
+                        mouse_interaction.active = mouse_buttons.pressed(MouseButton::Left) || 
+                                                  mouse_buttons.pressed(MouseButton::Right);
+                        mouse_interaction.repel = mouse_buttons.pressed(MouseButton::Right);
+                    } else {
+                        mouse_interaction.active = false;
+                        mouse_interaction.repel = false;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut mouse_interaction: ResMut<MouseInteraction>,
     mut fluid_params: ResMut<FluidParams>,
     mut debug_ui_state: ResMut<DebugUiState>,
     gpu_state: Res<GpuState>,
@@ -307,19 +355,6 @@ fn handle_input(
     mut toggle_cooldown: ResMut<ToggleCooldown>,
     time: Res<Time>,
 ) {
-    // Handle mouse interaction
-    if let Some(window) = windows.iter().next() {
-        if let Some(cursor_position) = window.cursor_position() {
-            if let Ok((camera, camera_transform)) = camera_q.single() {
-                if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
-                    mouse_interaction.position = world_position;
-                    mouse_interaction.active = mouse_buttons.pressed(MouseButton::Left) || 
-                                              mouse_buttons.pressed(MouseButton::Right);
-                    mouse_interaction.repel = mouse_buttons.pressed(MouseButton::Right);
-                }
-            }
-        }
-    }
 
     // Toggle force strength with number keys
     if keys.just_pressed(KeyCode::Digit1) {

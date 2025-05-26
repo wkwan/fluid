@@ -364,16 +364,23 @@ fn handle_mouse_input(
     mut mouse_interaction: ResMut<MouseInteraction>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
     mut gpu_state: ResMut<GpuState>,
+    draw_lake_mode: Res<crate::simulation::DrawLakeMode>,
 ) {
-    // Handle mouse interaction
+    // Handle mouse interaction (disabled when Draw Lake mode is active)
     if let Some(window) = windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
             if let Ok((camera, camera_transform)) = camera_q.single() {
                 if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
                     mouse_interaction.position = world_position;
-                    mouse_interaction.active = mouse_buttons.pressed(MouseButton::Left) || 
-                                               mouse_buttons.pressed(MouseButton::Right);
-                    mouse_interaction.repel = mouse_buttons.pressed(MouseButton::Right);
+                    // Disable mouse forces when Draw Lake mode is active
+                    if !draw_lake_mode.enabled {
+                        mouse_interaction.active = mouse_buttons.pressed(MouseButton::Left) || 
+                                                   mouse_buttons.pressed(MouseButton::Right);
+                        mouse_interaction.repel = mouse_buttons.pressed(MouseButton::Right);
+                    } else {
+                        mouse_interaction.active = false;
+                        mouse_interaction.repel = false;
+                    }
                 }
             }
         }

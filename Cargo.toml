@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 bevy = { version = "0.16.0", features = ["serialize"] }
+bevy_egui = "0.34.1"
 rand = "0.8.5"
 bytemuck = { version = "1.14", features = ["derive"] }
 futures-lite = "2.1.0"

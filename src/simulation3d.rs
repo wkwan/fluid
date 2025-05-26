@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::math::primitives::{Sphere, Plane3d};
 use bevy::pbr::MeshMaterial3d;
+use bevy::time::{Timer, TimerMode};
 use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
@@ -24,6 +25,16 @@ pub struct Marker3D;
 // Marker for the ground plane
 #[derive(Component)]
 pub struct GroundPlane;
+
+// Component to store deformable ground mesh data
+#[derive(Component)]
+pub struct DeformableGround {
+    pub vertices: Vec<Vec3>,
+    pub indices: Vec<u32>,
+    pub width_segments: u32,
+    pub height_segments: u32,
+    pub size: f32,
+}
 
 // Component for solid rubber ducks that interact with particles
 #[derive(Component)]
@@ -142,11 +153,12 @@ pub fn setup_3d_environment(
     // Add ground plane if it doesn't exist
     if query_ground.is_empty() {
         let ground_size = (BOUNDARY_MAX.x - BOUNDARY_MIN.x) * 1.2; // Make it slightly larger than boundaries
-        let ground_mesh = meshes.add(
-            Plane3d::default()
-                .mesh()
-                .size(ground_size, ground_size)
-        );
+        let segments = 50; // Higher resolution for better deformation
+        
+        // Create custom deformable ground mesh
+        let (vertices, indices) = create_deformable_plane_mesh(ground_size, segments, segments);
+        let ground_mesh = create_mesh_from_vertices(&vertices, &indices);
+        let mesh_handle = meshes.add(ground_mesh);
         
         let ground_material = materials.add(StandardMaterial {
             base_color: Color::srgb(0.6, 0.4, 0.2), // Brown color
@@ -156,10 +168,17 @@ pub fn setup_3d_environment(
         });
 
         commands.spawn((
-            Mesh3d(ground_mesh),
+            Mesh3d(mesh_handle),
             MeshMaterial3d(ground_material),
             Transform::from_xyz(0.0, BOUNDARY_MIN.y, 0.0), // Position at bottom boundary
             GroundPlane,
+            DeformableGround {
+                vertices: vertices.clone(),
+                indices,
+                width_segments: segments,
+                height_segments: segments,
+                size: ground_size,
+            },
             Marker3D,
         ));
     }
@@ -243,6 +262,7 @@ pub fn handle_mouse_input_3d(
     mut mouse_interaction_3d: ResMut<MouseInteraction3D>,
     sim_dim: Res<State<SimulationDimension>>,
     particles: Query<&Transform, With<Particle3D>>,
+    draw_lake_mode: Res<crate::simulation::DrawLakeMode>,
 ) {
     if *sim_dim.get() != SimulationDimension::Dim3 {
         return;
@@ -294,10 +314,15 @@ pub fn handle_mouse_input_3d(
         }
     }
 
-    // Update mouse interaction state
-    mouse_interaction_3d.active = mouse_buttons.pressed(MouseButton::Left) || 
-                                  mouse_buttons.pressed(MouseButton::Right);
-    mouse_interaction_3d.repel = mouse_buttons.pressed(MouseButton::Right);
+    // Update mouse interaction state (disabled when Draw Lake mode is active)
+    if !draw_lake_mode.enabled {
+        mouse_interaction_3d.active = mouse_buttons.pressed(MouseButton::Left) || 
+                                      mouse_buttons.pressed(MouseButton::Right);
+        mouse_interaction_3d.repel = mouse_buttons.pressed(MouseButton::Right);
+    } else {
+        mouse_interaction_3d.active = false;
+        mouse_interaction_3d.repel = false;
+    }
 }
 
 pub fn apply_external_forces_3d(
@@ -954,6 +979,237 @@ pub fn handle_particle_duck_collisions(
             }
         }
     }
+}
+
+// Helper function to create a deformable plane mesh
+fn create_deformable_plane_mesh(size: f32, width_segments: u32, height_segments: u32) -> (Vec<Vec3>, Vec<u32>) {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    
+    let half_size = size * 0.5;
+    
+    // Generate vertices
+    for y in 0..=height_segments {
+        for x in 0..=width_segments {
+            let u = x as f32 / width_segments as f32;
+            let v = y as f32 / height_segments as f32;
+            
+            let pos_x = (u - 0.5) * size;
+            let pos_z = (v - 0.5) * size;
+            let pos_y = 0.0; // Start flat
+            
+            vertices.push(Vec3::new(pos_x, pos_y, pos_z));
+        }
+    }
+    
+    // Generate indices for triangles
+    for y in 0..height_segments {
+        for x in 0..width_segments {
+            let i0 = y * (width_segments + 1) + x;
+            let i1 = i0 + 1;
+            let i2 = i0 + (width_segments + 1);
+            let i3 = i2 + 1;
+            
+            // First triangle
+            indices.push(i0);
+            indices.push(i2);
+            indices.push(i1);
+            
+            // Second triangle
+            indices.push(i1);
+            indices.push(i2);
+            indices.push(i3);
+        }
+    }
+    
+    (vertices, indices)
+}
+
+// Helper function to create a Bevy mesh from vertices and indices
+fn create_mesh_from_vertices(vertices: &[Vec3], indices: &[u32]) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+    
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    
+    // Set positions
+    let positions: Vec<[f32; 3]> = vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    
+    // Calculate normals (all pointing up initially)
+    let normals: Vec<[f32; 3]> = vertices.iter().map(|_| [0.0, 1.0, 0.0]).collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    
+    // Set UVs
+    let uvs: Vec<[f32; 2]> = vertices.iter().enumerate().map(|(i, _)| {
+        let segments = (vertices.len() as f32).sqrt() as u32;
+        let x = (i as u32) % (segments);
+        let y = (i as u32) / (segments);
+        [x as f32 / (segments - 1) as f32, y as f32 / (segments - 1) as f32]
+    }).collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    
+    // Set indices
+    mesh.insert_indices(Indices::U32(indices.to_vec()));
+    
+    mesh
+}
+
+// Resource to track ground deformation timing
+#[derive(Resource)]
+pub struct GroundDeformationTimer {
+    pub timer: Timer,
+}
+
+impl Default for GroundDeformationTimer {
+    fn default() -> Self {
+        Self {
+            // Allow deformation every 50ms when holding mouse button (20 times per second)
+            timer: Timer::from_seconds(0.05, TimerMode::Repeating),
+        }
+    }
+}
+
+// System to handle ground deformation when Draw Lake mode is active
+pub fn handle_ground_deformation(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+    mut ground_query: Query<(&mut DeformableGround, &Mesh3d, &Transform), With<GroundPlane>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    draw_lake_mode: Res<crate::simulation::DrawLakeMode>,
+    sim_dim: Res<State<SimulationDimension>>,
+    mut deformation_timer: ResMut<GroundDeformationTimer>,
+    time: Res<Time>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 || !draw_lake_mode.enabled {
+        return;
+    }
+    
+    // Update the deformation timer
+    deformation_timer.timer.tick(time.delta());
+    
+    // Deform on left mouse click or when left mouse button is held down
+    if !mouse_buttons.pressed(MouseButton::Left) {
+        // Reset timer when mouse is released so next click is immediate
+        deformation_timer.timer.reset();
+        return;
+    }
+    
+    // For initial click, deform immediately. For held clicks, use timer to throttle
+    let should_deform = mouse_buttons.just_pressed(MouseButton::Left) || 
+                       deformation_timer.timer.finished();
+    
+    if !should_deform {
+        return;
+    }
+    
+    // Reset timer for next deformation when holding
+    if mouse_buttons.pressed(MouseButton::Left) && !mouse_buttons.just_pressed(MouseButton::Left) {
+        deformation_timer.timer.reset();
+    }
+    
+    if let Some(window) = windows.iter().next() {
+        if let Some(cursor_position) = window.cursor_position() {
+            if let Ok((camera, camera_transform)) = camera_q.single() {
+                if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
+                    // Check if ray intersects with ground plane
+                    let ground_y = BOUNDARY_MIN.y;
+                    
+                    if ray.direction.y.abs() > 0.001 {
+                        let t = (ground_y - ray.origin.y) / ray.direction.y;
+                        if t > 0.0 {
+                            let intersection_point = ray.origin + ray.direction * t;
+                            
+                            // Deform the ground at this point
+                            if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
+                                deform_ground_at_point(
+                                    &mut deformable_ground,
+                                    &mut meshes,
+                                    mesh_handle,
+                                    intersection_point,
+                                    ground_transform,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Function to deform the ground mesh at a specific point
+fn deform_ground_at_point(
+    deformable_ground: &mut DeformableGround,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    mesh_handle: &Mesh3d,
+    world_point: Vec3,
+    ground_transform: &Transform,
+) {
+    let deformation_radius = 50.0; // Radius of deformation
+    let deformation_depth = 20.0; // How deep to make the cavity
+    
+    // Convert world point to local ground coordinates
+    let local_point = ground_transform.compute_matrix().inverse().transform_point3(world_point);
+    
+    // Deform vertices within radius
+    for vertex in &mut deformable_ground.vertices {
+        let distance = (Vec3::new(vertex.x, 0.0, vertex.z) - Vec3::new(local_point.x, 0.0, local_point.z)).length();
+        
+        if distance < deformation_radius {
+            // Use a smooth falloff function
+            let falloff = 1.0 - (distance / deformation_radius);
+            let falloff_smooth = falloff * falloff * (3.0 - 2.0 * falloff); // Smoothstep
+            
+            // Deform downward
+            vertex.y -= deformation_depth * falloff_smooth;
+        }
+    }
+    
+    // Update the mesh with new vertices
+    if let Some(mesh) = meshes.get_mut(&mesh_handle.0) {
+        let positions: Vec<[f32; 3]> = deformable_ground.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        
+        // Recalculate normals for proper lighting
+        recalculate_normals(mesh, &deformable_ground.vertices, &deformable_ground.indices);
+    }
+}
+
+// Helper function to recalculate normals after mesh deformation
+fn recalculate_normals(mesh: &mut Mesh, vertices: &[Vec3], indices: &[u32]) {
+    let mut normals = vec![Vec3::ZERO; vertices.len()];
+    
+    // Calculate face normals and accumulate vertex normals
+    for triangle in indices.chunks(3) {
+        let i0 = triangle[0] as usize;
+        let i1 = triangle[1] as usize;
+        let i2 = triangle[2] as usize;
+        
+        let v0 = vertices[i0];
+        let v1 = vertices[i1];
+        let v2 = vertices[i2];
+        
+        let edge1 = v1 - v0;
+        let edge2 = v2 - v0;
+        let face_normal = edge1.cross(edge2).normalize();
+        
+        normals[i0] += face_normal;
+        normals[i1] += face_normal;
+        normals[i2] += face_normal;
+    }
+    
+    // Normalize vertex normals
+    for normal in &mut normals {
+        *normal = normal.normalize();
+    }
+    
+    let normal_array: Vec<[f32; 3]> = normals.iter().map(|n| [n.x, n.y, n.z]).collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normal_array);
 }
 
 fn create_boundary_wireframe(

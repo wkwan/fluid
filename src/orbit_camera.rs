@@ -72,6 +72,7 @@ pub fn control_orbit_camera(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     sim_dim: Res<State<SimulationDimension>>,
+    draw_lake_mode: Res<crate::simulation::DrawLakeMode>,
 ) {
     if *sim_dim.get() != SimulationDimension::Dim3 {
         return;
@@ -79,11 +80,19 @@ pub fn control_orbit_camera(
 
     let Ok((mut cam, mut transform)) = query.single_mut() else { return; };
 
-    // Mouse movement rotates camera (like standard FPS controls)
-    for ev in mouse_evr.read() {
-        cam.yaw -= ev.delta.x * 0.25;
-        cam.pitch -= ev.delta.y * 0.25;
-        cam.pitch = cam.pitch.clamp(-89.0, 89.0);
+    // Mouse movement rotates camera
+    // When Draw Lake mode is active, only rotate if right mouse button is held down
+    let should_rotate_camera = !draw_lake_mode.enabled || buttons.pressed(MouseButton::Right);
+    
+    if should_rotate_camera {
+        for ev in mouse_evr.read() {
+            cam.yaw -= ev.delta.x * 0.25;
+            cam.pitch -= ev.delta.y * 0.25;
+            cam.pitch = cam.pitch.clamp(-89.0, 89.0);
+        }
+    } else {
+        // Clear mouse events when not rotating to prevent them from accumulating
+        mouse_evr.clear();
     }
 
     // Scroll zoom
