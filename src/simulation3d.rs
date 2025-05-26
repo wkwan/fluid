@@ -63,9 +63,9 @@ pub struct SpawnRegion3D {
 impl Default for SpawnRegion3D {
     fn default() -> Self {
         Self {
-            min: Vec3::new(-50.0, 100.0, -50.0),
-            max: Vec3::new(50.0, 200.0, 50.0),
-            spacing: PARTICLE_RADIUS * 2.5,
+            min: Vec3::new(-25.0, 100.0, -25.0),
+            max: Vec3::new(25.0, 200.0, 25.0),
+            spacing: PARTICLE_RADIUS * 1.15,
             active: true,
         }
     }

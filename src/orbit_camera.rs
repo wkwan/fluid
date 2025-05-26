@@ -7,6 +7,7 @@ pub struct OrbitCamera {
     yaw: f32,
     pitch: f32,
     distance: f32,
+    center: Vec3, // The point the camera orbits around
 }
 
 // Marker component for 2D camera
@@ -38,6 +39,7 @@ pub fn spawn_orbit_camera(
             yaw: 0.0,
             pitch: -20.0,
             distance: 400.0,
+            center: Vec3::ZERO,
         },
     ));
 }
@@ -61,28 +63,27 @@ pub fn despawn_orbit_camera(
     }
 }
 
-/// Mouse-driven orbit / scroll-wheel zoom with reset key.
+/// Mouse-driven orbit / scroll-wheel zoom with reset key and WASD movement.
 pub fn control_orbit_camera(
     mut query: Query<(&mut OrbitCamera, &mut Transform)>,
     mut mouse_evr: EventReader<MouseMotion>,
     mut scroll_evr: EventReader<MouseWheel>,
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
-    sim_dim: Res<State<SimulationDimension>>,)
-{
+    time: Res<Time>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
     if *sim_dim.get() != SimulationDimension::Dim3 {
         return;
     }
 
     let Ok((mut cam, mut transform)) = query.single_mut() else { return; };
 
-    // Right-mouse drag rotates
-    if buttons.pressed(MouseButton::Right) {
-        for ev in mouse_evr.read() {
-            cam.yaw -= ev.delta.x * 0.25;
-            cam.pitch -= ev.delta.y * 0.25;
-            cam.pitch = cam.pitch.clamp(-89.0, 89.0);
-        }
+    // Mouse movement rotates camera (like standard FPS controls)
+    for ev in mouse_evr.read() {
+        cam.yaw -= ev.delta.x * 0.25;
+        cam.pitch -= ev.delta.y * 0.25;
+        cam.pitch = cam.pitch.clamp(-89.0, 89.0);
     }
 
     // Scroll zoom
@@ -91,19 +92,51 @@ pub fn control_orbit_camera(
         cam.distance = cam.distance.clamp(MIN_ZOOM, MAX_ZOOM);
     }
 
-    // Reset orientation key (Home)
+    // WASD movement controls
+    let movement_speed = 200.0 * time.delta_secs(); // Units per second
+    let mut movement = Vec3::ZERO;
+
+    // Calculate camera's full rotation (yaw + pitch) to get true forward direction
+    let camera_rotation = Quat::from_euler(EulerRot::YXZ,
+                                          cam.yaw.to_radians(),
+                                          cam.pitch.to_radians(),
+                                          0.0);
+    let forward = camera_rotation * Vec3::NEG_Z; // Camera looks down -Z, so forward is -Z
+    let right = camera_rotation * Vec3::X;
+
+    if keys.pressed(KeyCode::KeyW) {
+        movement += forward * movement_speed; // Forward relative to camera
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        movement -= forward * movement_speed; // Backward relative to camera
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        movement -= right * movement_speed; // Left relative to camera
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        movement += right * movement_speed; // Right relative to camera
+    }
+
+    // Apply movement to camera center
+    if movement != Vec3::ZERO {
+        cam.center += movement;
+    }
+
+    // Reset orientation and position key (Home)
     if keys.just_pressed(KeyCode::Home) {
         cam.yaw = RESET_YAW;
         cam.pitch = RESET_PITCH;
         cam.distance = RESET_DISTANCE.clamp(MIN_ZOOM, MAX_ZOOM);
+        cam.center = Vec3::ZERO;
     }
 
+    // Calculate camera position based on center point
     let rot = Quat::from_euler(EulerRot::YXZ,
                                cam.yaw.to_radians(),
                                cam.pitch.to_radians(),
                                0.0);
-    transform.translation = rot * Vec3::Z * cam.distance;
-    transform.look_at(Vec3::ZERO, Vec3::Y);
+    transform.translation = cam.center + (rot * Vec3::Z * cam.distance);
+    transform.look_at(cam.center, Vec3::Y);
 }
 
 /// Spawn a 2D camera when entering 2D mode (if none exists).
