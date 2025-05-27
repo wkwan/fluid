@@ -708,6 +708,10 @@ fn double_density_relaxation(
     // Calculate position displacements for each particle
     let mut displacements = std::collections::HashMap::with_capacity(particle_data.len());
     
+    // Debug counters
+    let mut total_overlaps = 0;
+    let mut total_repulsion_applied = 0;
+    
     for &(entity_i, position_i, density_i, near_density_i) in &particle_data {
         let neighbors = spatial_hash.spatial_hash.get_neighbors(position_i, smoothing_radius);
         
@@ -716,6 +720,8 @@ fn double_density_relaxation(
         let near_pressure_i = k_near * near_density_i;
         
         let mut displacement_i = Vec2::ZERO;
+        let mut particle_overlaps = 0;
+        let mut min_distance = f32::MAX;
         
         for neighbor_entity in neighbors {
             if neighbor_entity == entity_i {
@@ -725,6 +731,10 @@ fn double_density_relaxation(
             if let Some(&position_j) = position_map.get(&neighbor_entity) {
                 let offset = position_i - position_j;
                 let distance = offset.length();
+                
+                if distance > 0.0 {
+                    min_distance = min_distance.min(distance);
+                }
                 
                 if distance > 0.0 && distance < smoothing_radius {
                     let direction = offset / distance;
@@ -737,11 +747,20 @@ fn double_density_relaxation(
                     );
                     
                     // Add strong repulsion force when particles get too close to prevent overlapping
-                    let min_distance = PARTICLE_RADIUS * 2.0; // Minimum separation distance
-                    if distance < min_distance {
-                        let overlap_factor = (min_distance - distance) / min_distance;
+                    let min_distance_threshold = PARTICLE_RADIUS * 2.0; // Minimum separation distance
+                    if distance < min_distance_threshold {
+                        particle_overlaps += 1;
+                        total_overlaps += 1;
+                        let overlap_factor = (min_distance_threshold - distance) / min_distance_threshold;
                         let repulsion_force = overlap_factor * overlap_factor * 500.0 * dt_squared;
                         displacement_magnitude += repulsion_force;
+                        total_repulsion_applied += 1;
+                        
+                        // Log first few overlaps for debugging
+                        if total_overlaps <= 3 {
+                            println!("CPU 2D: Applying repulsion force. Distance: {:.3}, Min: {:.3}, Force: {:.3}, Overlap factor: {:.3}", 
+                                     distance, min_distance_threshold, repulsion_force, overlap_factor);
+                        }
                     }
                     
                     let displacement = direction * displacement_magnitude;
@@ -756,6 +775,22 @@ fn double_density_relaxation(
         }
         
         displacements.insert(entity_i, displacement_i);
+        
+        // Debug log for particles with overlaps
+        if particle_overlaps > 0 && total_overlaps <= 5 {
+            println!("CPU 2D: Particle has {} overlaps, min_distance: {:.3}, displacement: ({:.3}, {:.3})", 
+                     particle_overlaps, min_distance, displacement_i.x, displacement_i.y);
+        }
+    }
+    
+    // Log summary every few frames
+    static mut CPU_FRAME_COUNTER: u32 = 0;
+    unsafe {
+        CPU_FRAME_COUNTER += 1;
+        if CPU_FRAME_COUNTER % 60 == 0 && total_overlaps > 0 {
+            println!("CPU 2D DEBUG: Frame {}: Found {} overlaps, applied {} repulsion forces", 
+                     CPU_FRAME_COUNTER, total_overlaps, total_repulsion_applied);
+        }
     }
     
     // Apply displacements to particle positions

@@ -202,11 +202,13 @@ fn process_neighbor_cell(cell_offset_x: i32, cell_offset_y: i32,
                 let dist = sqrt(dist_squared);
                 let dir = offset / dist;
                 
-                // Pressure force calculation with shared pressure for stability
-                let shared_pressure = (shared_particles[local_index].pressure + other_particle.pressure) * 0.5;
-                let shared_near_pressure = (shared_particles[local_index].near_pressure + other_particle.near_pressure) * 0.5;
+                // Pressure force calculation with reduced strength to avoid conflicts with position correction
+                // The position correction shader handles the main density relaxation per the paper
+                let pressure_force_reduction = 0.0; // Completely disable force-based pressure - position correction handles everything
+                let shared_pressure = (shared_particles[local_index].pressure + other_particle.pressure) * 0.5 * pressure_force_reduction;
+                let shared_near_pressure = (shared_particles[local_index].near_pressure + other_particle.near_pressure) * 0.5 * pressure_force_reduction;
                 
-                // Calculate pressure forces - combined for better instruction pipelining
+                // Calculate pressure forces - combined for better instruction pipelining (reduced strength)
                 let pressure_factor = spiky_pow3_derivative(dist, h) * shared_pressure + 
                                       spiky_pow2_derivative(dist, h) * shared_near_pressure;
                 let pressure_force = dir * pressure_factor;

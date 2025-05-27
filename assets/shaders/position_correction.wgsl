@@ -1,5 +1,5 @@
 // Position correction shader to prevent particle overlapping
-// Implements the same approach as CPU's double_density_relaxation function
+// Fixed to use correct binding layout and spatial hash logic
 
 struct Particle {
     position: vec2<f32>,
@@ -56,6 +56,8 @@ var<storage, read_write> spatial_offsets: array<u32>;
 // Hash table size constants - must be power of two
 const TABLE_SIZE: u32 = 4096u;
 const TABLE_SIZE_MASK: u32 = 4095u; // TABLE_SIZE - 1
+const HASH_K1: u32 = 15823u;
+const HASH_K2: u32 = 9737333u;
 
 // Get cell from position and radius
 fn get_cell_2d(position: vec2<f32>, radius: f32) -> vec2<i32> {
@@ -66,7 +68,7 @@ fn get_cell_2d(position: vec2<f32>, radius: f32) -> vec2<i32> {
 fn hash_cell_2d(cell: vec2<i32>) -> u32 {
     let x = u32(cell.x);
     let y = u32(cell.y);
-    return (x * 15823u) ^ (y * 9737333u);
+    return (x * HASH_K1) ^ (y * HASH_K2);
 }
 
 // Get key from hash for a table of given size
@@ -90,17 +92,25 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let dt = params.dt;
     let dt_squared = dt * dt;
     
+    // Clear debug info at start of frame
+    particle.padding0 = vec2<f32>(0.0, 0.0); // [overlap_count, min_distance_found]
+    particle.padding1 = vec2<f32>(0.0, 0.0); // [total_repulsion_force, max_displacement]
+    
     // Calculate pressure from density like CPU does (paper equations 2 and 5)
     let pressure = params.pressure_multiplier * (particle.density - params.target_density);
     let near_pressure = params.near_pressure_multiplier * particle.near_density;
     
-    // Get the cell for this particle
-    let cell = get_cell_2d(pos, radius * 2.0);
+    // Get the cell for this particle (use same cell size as other shaders)
+    let cell_size = radius * 2.0;
+    let cell = get_cell_2d(pos, cell_size);
     
     // Initialize displacement
     var displacement = vec2<f32>(0.0, 0.0);
+    var overlap_count = 0.0;
+    var min_distance_found = 999999.0;
+    var total_repulsion_force = 0.0;
     
-    // Process all 9 neighboring cells
+    // Process all 9 neighboring cells using the CORRECT spatial hash lookup (same as density_pressure.wgsl)
     for (var cell_offset_y = -1; cell_offset_y <= 1; cell_offset_y++) {
         for (var cell_offset_x = -1; cell_offset_x <= 1; cell_offset_x++) {
             let neighbor_cell = vec2<i32>(
@@ -116,28 +126,32 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 continue; // Skip empty cells
             }
             
+            // FIXED: Use the correct spatial hash lookup logic (same as density_pressure.wgsl)
             var curr_index = start_index;
             
             // Iterate through particles in this cell
             while (curr_index < arrayLength(&particles)) {
-                let neighbor_index = curr_index;
-                
                 // Check if still in the same cell by comparing keys
-                if (spatial_keys[neighbor_index] != key) {
+                if (spatial_keys[curr_index] != key) {
                     break;
                 }
                 
                 // Skip self
-                if (neighbor_index == index) {
+                if (curr_index == index) {
                     curr_index = curr_index + 1u;
                     continue;
                 }
                 
-                let neighbor = particles[neighbor_index];
+                let neighbor = particles[curr_index];
                 let neighbor_pos = neighbor.position;
                 
                 let offset = pos - neighbor_pos;
                 let distance = length(offset);
+                
+                // Track minimum distance for debugging
+                if (distance > 0.0001) {
+                    min_distance_found = min(min_distance_found, distance);
+                }
                 
                 // Skip if not within smoothing radius or too close to zero
                 if (distance <= 0.0001 || distance >= radius) {
@@ -157,9 +171,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 // Add strong repulsion force when particles get too close to prevent overlapping
                 let min_distance = params.particle_radius * 2.0; // Minimum separation distance
                 if (distance < min_distance) {
+                    overlap_count += 1.0;
                     let overlap_factor = (min_distance - distance) / min_distance;
-                    let repulsion_force = overlap_factor * overlap_factor * 500.0 * dt_squared;
+                    // Increased repulsion force for stronger overlap prevention
+                    let repulsion_force = overlap_factor * overlap_factor * 2000.0 * dt_squared;
                     displacement_magnitude += repulsion_force;
+                    total_repulsion_force += repulsion_force;
                 }
                 
                 let particle_displacement = direction * displacement_magnitude;
@@ -171,6 +188,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             }
         }
     }
+    
+    // Store debug information in padding fields
+    particle.padding0.x = overlap_count; // Number of overlapping neighbors
+    particle.padding0.y = min_distance_found; // Minimum distance to any neighbor
+    particle.padding1.x = total_repulsion_force; // Total repulsion force applied
+    particle.padding1.y = length(displacement); // Total displacement magnitude
     
     // Apply displacement to particle position
     let old_position = particle.position;

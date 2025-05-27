@@ -261,21 +261,23 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
                 dir_to_neighbor = offset_to_neighbor / dst;
             }
             
-            // Calculate shared pressure
-            let shared_pressure = (pressure + neighbor_pressure) * 0.5;
-            let shared_near_pressure = (near_pressure + neighbor_near_pressure) * 0.5;
+            // Calculate shared pressure with reduced strength to avoid conflicts with position correction
+            // The position correction shader handles the main density relaxation per the paper
+            let pressure_force_reduction = 0.0; // Completely disable force-based pressure - position correction handles everything
+            let shared_pressure = (pressure + neighbor_pressure) * 0.5 * pressure_force_reduction;
+            let shared_near_pressure = (near_pressure + neighbor_near_pressure) * 0.5 * pressure_force_reduction;
             
             // Calculate pressure force using derivatives of the smoothing kernels
             if (neighbor_density > 0.0) {
-                // Standard pressure force
+                // Standard pressure force (reduced)
                 let pressure_force_magnitude = spiky_pow2_derivative(dst, radius) 
                                 * shared_pressure / max(0.001, neighbor_density);
                 
-                // Near pressure force (provides more stable interactions at very close distances)
+                // Near pressure force (reduced) - provides more stable interactions at very close distances
                 let near_pressure_force_magnitude = spiky_pow3_derivative(dst, radius) 
                                 * shared_near_pressure / max(0.001, neighbor_near_density);
                 
-                // Combine forces (removed additional_repulsion - will be handled in position correction)
+                // Combine forces (position correction shader handles main anti-overlap forces)
                 let total_force_magnitude = pressure_force_magnitude + near_pressure_force_magnitude;
                 pressure_force += dir_to_neighbor * total_force_magnitude;
             }

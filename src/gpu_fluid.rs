@@ -2,10 +2,10 @@ use bevy::{
     prelude::*,
     render::{
         render_resource::{
-            BindGroup, BindGroupLayout, BindGroupLayoutEntry, 
-            BindingType, Buffer, BufferBindingType,
-            ComputePipeline, ComputePipelineDescriptor, 
-            PipelineCache, ShaderStages,
+            BindGroup, BindGroupLayout, BindGroupLayoutEntry, BindGroupEntry, 
+            BindingType, Buffer, BufferBindingType, BufferUsages, BufferDescriptor,
+            BufferInitDescriptor, ComputePipeline, ComputePipelineDescriptor, 
+            PipelineCache, ShaderStages, CachedComputePipelineId,
         },
         renderer::{RenderDevice, RenderQueue},
         RenderApp, Render, RenderSet, Extract, ExtractSchedule,
@@ -13,11 +13,11 @@ use bevy::{
     asset::AssetServer,
     log::info,
 };
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{Pod, Zeroable, cast_slice};
 use std::borrow::Cow;
 
 use crate::simulation::{Particle, FluidParams, MouseInteraction};
-use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING};
+use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_2D};
 
 pub struct GpuFluidPlugin;
 
@@ -135,6 +135,7 @@ struct FluidPipeline {
     reorder_pipeline: Option<ComputePipeline>,
     reorder_copyback_pipeline: Option<ComputePipeline>,
     calculate_offsets_pipeline: Option<ComputePipeline>,
+    position_correction_pipeline: Option<ComputePipeline>,
     bind_group_layout: Option<BindGroupLayout>,
     
     // Store pipeline IDs for retrieval
@@ -145,6 +146,7 @@ struct FluidPipeline {
     reorder_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
     reorder_copyback_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
     calculate_offsets_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
+    position_correction_id: Option<bevy::render::render_resource::CachedComputePipelineId>,
 }
 
 #[derive(Resource, Default)]
@@ -437,6 +439,22 @@ fn extract_fluid_params(
         near_pressures.push(particle.near_pressure);
     }
 
+    // Debug logging for GPU parameters
+    static mut EXTRACT_FRAME_COUNTER: u32 = 0;
+    unsafe {
+        EXTRACT_FRAME_COUNTER += 1;
+        if EXTRACT_FRAME_COUNTER % 120 == 0 { // Log every 2 seconds at 60fps
+            println!("GPU 2D EXTRACT: Frame {}: Extracting {} particles", EXTRACT_FRAME_COUNTER, particles.iter().len());
+            println!("GPU 2D PARAMS: smoothing_radius={:.2}, target_density={:.2}, pressure_mult={:.2}, near_pressure_mult={:.2}", 
+                     fluid_params.smoothing_radius, fluid_params.target_density, 
+                     fluid_params.pressure_multiplier, fluid_params.near_pressure_multiplier);
+            println!("GPU 2D PARAMS: particle_radius={:.2}, dt={:.4}, boundary_min=({:.1}, {:.1}), boundary_max=({:.1}, {:.1})", 
+                     PARTICLE_RADIUS, time.delta_secs(), 
+                     fluid_params.boundary_min.x, fluid_params.boundary_min.y,
+                     fluid_params.boundary_max.x, fluid_params.boundary_max.y);
+        }
+    }
+
     commands.insert_resource(ExtractedFluidParams {
         params: fluid_params.clone(),
         mouse: mouse_interaction.clone(),
@@ -463,17 +481,20 @@ fn prepare_bind_groups(
     extracted_params: Option<Res<ExtractedFluidParams>>,
 ) {
     // Skip if GPU is disabled
-    if !gpu_state.enabled || extracted_params.is_none() {
+    if !gpu_state.enabled {
         return;
     }
     
-    let extracted_data = extracted_params.as_ref().unwrap();
-    let num_particles = extracted_data.num_particles;
+    // DEBUG: Log pipeline preparation start
+    info!("GPU DEBUG: Starting pipeline preparation");
     
-    // Create bind group layout if it doesn't exist
+    // Create bind group layout if needed
     if fluid_pipeline.bind_group_layout.is_none() {
-        let entries = vec![
-            // Particle data (read/write)
+        info!("GPU DEBUG: Creating bind group layout");
+        let layout = render_device.create_bind_group_layout(
+            "fluid_bind_group_layout",
+            &[
+                // Particle buffer
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::COMPUTE,
@@ -484,7 +505,7 @@ fn prepare_bind_groups(
                 },
                 count: None,
             },
-            // Simulation parameters (read-only)
+                // Params buffer
             BindGroupLayoutEntry {
                 binding: 1,
                 visibility: ShaderStages::COMPUTE,
@@ -495,7 +516,7 @@ fn prepare_bind_groups(
                 },
                 count: None,
             },
-            // Spatial hash keys (read/write)
+                // Spatial hash keys buffer
             BindGroupLayoutEntry {
                 binding: 2,
                 visibility: ShaderStages::COMPUTE,
@@ -506,7 +527,7 @@ fn prepare_bind_groups(
                 },
                 count: None,
             },
-            // Spatial hash indices (read/write)
+                // Spatial hash indices buffer
             BindGroupLayoutEntry {
                 binding: 3,
                 visibility: ShaderStages::COMPUTE,
@@ -517,7 +538,7 @@ fn prepare_bind_groups(
                 },
                 count: None,
             },
-            // Spatial hash offsets (read/write)
+                // Spatial hash offsets buffer
             BindGroupLayoutEntry {
                 binding: 4,
                 visibility: ShaderStages::COMPUTE,
@@ -528,84 +549,29 @@ fn prepare_bind_groups(
                 },
                 count: None,
             },
-        ];
-        
-        let layout = render_device.create_bind_group_layout("fluid_simulation_bind_group_layout", &entries);
+                // Target particles buffer
+                BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        );
         fluid_pipeline.bind_group_layout = Some(layout);
+        info!("GPU DEBUG: Bind group layout created successfully");
     }
 
-    // Create compute pipelines if they don't exist
-    
-    // 1. Spatial hash pipeline
-    if fluid_pipeline.spatial_hash_pipeline.is_none() && fluid_pipeline.spatial_hash_id.is_none() {
-        let shader = asset_server.load("shaders/spatial_hash.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("spatial_hash_pipeline")),
-            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        };
-        
-        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipeline.spatial_hash_id = Some(id);
-    }
-    
-    // 2. Calculate offsets pipeline
-    if fluid_pipeline.calculate_offsets_pipeline.is_none() && fluid_pipeline.calculate_offsets_id.is_none() {
-        let shader = asset_server.load("shaders/calculate_offsets.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("calculate_offsets_pipeline")),
-            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        };
-        
-        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipeline.calculate_offsets_id = Some(id);
-    }
-    
-    // 3. Reorder pipeline
-    if fluid_pipeline.reorder_pipeline.is_none() && fluid_pipeline.reorder_id.is_none() {
-        let shader = asset_server.load("shaders/reorder.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("reorder_pipeline")),
-            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        };
-        
-        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipeline.reorder_id = Some(id);
-    }
-    
-    // 4. Reorder copyback pipeline
-    if fluid_pipeline.reorder_copyback_pipeline.is_none() && fluid_pipeline.reorder_copyback_id.is_none() {
-        let shader = asset_server.load("shaders/reorder_copyback.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("reorder_copyback_pipeline")),
-            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        };
-        
-        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipeline.reorder_copyback_id = Some(id);
-    }
+    // Create pipelines
+    let pipeline_cache = pipeline_cache.into_inner();
 
-    // 5. Density pressure pipeline
+    // 1. Density pressure pipeline
     if fluid_pipeline.density_pressure_pipeline.is_none() && fluid_pipeline.density_pressure_id.is_none() {
+        info!("GPU DEBUG: Creating density pressure pipeline");
         let shader = asset_server.load("shaders/density_pressure.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("density_pressure_pipeline")),
@@ -619,10 +585,12 @@ fn prepare_bind_groups(
         
         let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
         fluid_pipeline.density_pressure_id = Some(id);
+        info!("GPU DEBUG: Density pressure pipeline queued with ID: {:?}", id);
     }
 
-    // 6. Forces pipeline
+    // 2. Forces pipeline
     if fluid_pipeline.forces_pipeline.is_none() && fluid_pipeline.forces_id.is_none() {
+        info!("GPU DEBUG: Creating forces pipeline");
         let shader = asset_server.load("shaders/forces.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("forces_pipeline")),
@@ -636,10 +604,12 @@ fn prepare_bind_groups(
         
         let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
         fluid_pipeline.forces_id = Some(id);
+        info!("GPU DEBUG: Forces pipeline queued with ID: {:?}", id);
     }
 
-    // 7. Integration pipeline
+    // 3. Integration pipeline
     if fluid_pipeline.integration_pipeline.is_none() && fluid_pipeline.integration_id.is_none() {
+        info!("GPU DEBUG: Creating integration pipeline");
         let shader = asset_server.load("shaders/integration.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("integration_pipeline")),
@@ -653,45 +623,334 @@ fn prepare_bind_groups(
         
         let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
         fluid_pipeline.integration_id = Some(id);
+        info!("GPU DEBUG: Integration pipeline queued with ID: {:?}", id);
     }
 
-    // Check if all pipelines are available
-    let all_pipelines_ready = 
+    // 4. Spatial hash pipeline
+    if fluid_pipeline.spatial_hash_pipeline.is_none() && fluid_pipeline.spatial_hash_id.is_none() {
+        info!("GPU DEBUG: Creating spatial hash pipeline");
+        let shader = asset_server.load("shaders/spatial_hash.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("spatial_hash_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.spatial_hash_id = Some(id);
+        info!("GPU DEBUG: Spatial hash pipeline queued with ID: {:?}", id);
+    }
+
+    // 5. Reorder pipeline
+    if fluid_pipeline.reorder_pipeline.is_none() && fluid_pipeline.reorder_id.is_none() {
+        info!("GPU DEBUG: Creating reorder pipeline");
+        let shader = asset_server.load("shaders/reorder.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("reorder_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.reorder_id = Some(id);
+        info!("GPU DEBUG: Reorder pipeline queued with ID: {:?}", id);
+    }
+
+    // 6. Reorder copyback pipeline
+    if fluid_pipeline.reorder_copyback_pipeline.is_none() && fluid_pipeline.reorder_copyback_id.is_none() {
+        info!("GPU DEBUG: Creating reorder copyback pipeline");
+        let shader = asset_server.load("shaders/reorder_copyback.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("reorder_copyback_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.reorder_copyback_id = Some(id);
+        info!("GPU DEBUG: Reorder copyback pipeline queued with ID: {:?}", id);
+    }
+
+    // 7. Calculate offsets pipeline
+    if fluid_pipeline.calculate_offsets_pipeline.is_none() && fluid_pipeline.calculate_offsets_id.is_none() {
+        info!("GPU DEBUG: Creating calculate offsets pipeline");
+        let shader = asset_server.load("shaders/calculate_offsets.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("calculate_offsets_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.calculate_offsets_id = Some(id);
+        info!("GPU DEBUG: Calculate offsets pipeline queued with ID: {:?}", id);
+    }
+
+    // 8. Position correction pipeline - CRITICAL FIX for particle overlapping
+    if fluid_pipeline.position_correction_pipeline.is_none() && fluid_pipeline.position_correction_id.is_none() {
+        info!("GPU DEBUG: Creating position correction pipeline - THIS IS CRITICAL FOR OVERLAP PREVENTION");
+        let shader = asset_server.load("shaders/position_correction.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("position_correction_pipeline")),
+            layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        
+        let id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipeline.position_correction_id = Some(id);
+        info!("GPU DEBUG: Position correction pipeline queued with ID: {:?}", id);
+    }
+
+    // CRITICAL FIX: Retrieve compiled pipelines from cache
+    if let Some(id) = fluid_pipeline.density_pressure_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            if fluid_pipeline.density_pressure_pipeline.is_none() {
+                fluid_pipeline.density_pressure_pipeline = Some(pipeline.clone());
+                info!("GPU DEBUG: Density pressure pipeline retrieved and cached");
+            }
+        }
+    }
+
+    if let Some(id) = fluid_pipeline.forces_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            if fluid_pipeline.forces_pipeline.is_none() {
+                fluid_pipeline.forces_pipeline = Some(pipeline.clone());
+                info!("GPU DEBUG: Forces pipeline retrieved and cached");
+            }
+        }
+    }
+
+    if let Some(id) = fluid_pipeline.integration_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            if fluid_pipeline.integration_pipeline.is_none() {
+                fluid_pipeline.integration_pipeline = Some(pipeline.clone());
+                info!("GPU DEBUG: Integration pipeline retrieved and cached");
+            }
+        }
+    }
+
+    if let Some(id) = fluid_pipeline.spatial_hash_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            if fluid_pipeline.spatial_hash_pipeline.is_none() {
+                fluid_pipeline.spatial_hash_pipeline = Some(pipeline.clone());
+                info!("GPU DEBUG: Spatial hash pipeline retrieved and cached");
+            }
+        }
+    }
+
+    if let Some(id) = fluid_pipeline.reorder_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            if fluid_pipeline.reorder_pipeline.is_none() {
+                fluid_pipeline.reorder_pipeline = Some(pipeline.clone());
+                info!("GPU DEBUG: Reorder pipeline retrieved and cached");
+            }
+        }
+    }
+
+    if let Some(id) = fluid_pipeline.reorder_copyback_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            if fluid_pipeline.reorder_copyback_pipeline.is_none() {
+                fluid_pipeline.reorder_copyback_pipeline = Some(pipeline.clone());
+                info!("GPU DEBUG: Reorder copyback pipeline retrieved and cached");
+            }
+        }
+    }
+
+    if let Some(id) = fluid_pipeline.calculate_offsets_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            if fluid_pipeline.calculate_offsets_pipeline.is_none() {
+                fluid_pipeline.calculate_offsets_pipeline = Some(pipeline.clone());
+                info!("GPU DEBUG: Calculate offsets pipeline retrieved and cached");
+            }
+        }
+    }
+
+    // CRITICAL: Position correction pipeline retrieval
+    if let Some(id) = fluid_pipeline.position_correction_id {
+        if let Some(pipeline) = pipeline_cache.get_compute_pipeline(id) {
+            if fluid_pipeline.position_correction_pipeline.is_none() {
+                fluid_pipeline.position_correction_pipeline = Some(pipeline.clone());
+                info!("GPU DEBUG: *** POSITION CORRECTION PIPELINE RETRIEVED AND CACHED ***");
+            }
+        } else {
+            info!("GPU DEBUG: Position correction pipeline not yet compiled, ID: {:?}", id);
+        }
+    }
+
+    // Check if all pipelines are ready
+    let all_pipelines_ready = fluid_pipeline.density_pressure_pipeline.is_some() &&
+                             fluid_pipeline.forces_pipeline.is_some() &&
+                             fluid_pipeline.integration_pipeline.is_some() &&
         fluid_pipeline.spatial_hash_pipeline.is_some() &&
-        fluid_pipeline.calculate_offsets_pipeline.is_some() &&
         fluid_pipeline.reorder_pipeline.is_some() &&
         fluid_pipeline.reorder_copyback_pipeline.is_some() &&
-        fluid_pipeline.density_pressure_pipeline.is_some() &&
-        fluid_pipeline.forces_pipeline.is_some() &&
-        fluid_pipeline.integration_pipeline.is_some();
+                             fluid_pipeline.calculate_offsets_pipeline.is_some() &&
+                             fluid_pipeline.position_correction_pipeline.is_some();
 
-    bind_group.pipeline_ready = all_pipelines_ready;
+    info!("GPU DEBUG: Pipeline readiness check - All ready: {}", all_pipelines_ready);
+    info!("GPU DEBUG: - Density pressure: {}", fluid_pipeline.density_pressure_pipeline.is_some());
+    info!("GPU DEBUG: - Forces: {}", fluid_pipeline.forces_pipeline.is_some());
+    info!("GPU DEBUG: - Integration: {}", fluid_pipeline.integration_pipeline.is_some());
+    info!("GPU DEBUG: - Spatial hash: {}", fluid_pipeline.spatial_hash_pipeline.is_some());
+    info!("GPU DEBUG: - Reorder: {}", fluid_pipeline.reorder_pipeline.is_some());
+    info!("GPU DEBUG: - Reorder copyback: {}", fluid_pipeline.reorder_copyback_pipeline.is_some());
+    info!("GPU DEBUG: - Calculate offsets: {}", fluid_pipeline.calculate_offsets_pipeline.is_some());
+    info!("GPU DEBUG: - Position correction: {}", fluid_pipeline.position_correction_pipeline.is_some());
 
-    // Create particle buffer for GPU simulation
-    if bind_group.particle_buffer.is_none() || bind_group.num_particles != num_particles as u32 {
-        // Create the GPU buffer for particles 
-        // ...existing buffer creation code...
-        
-        // Create readback buffer for returning results to CPU
-        if gpu_results.readback_buffers[0].is_none() || bind_group.num_particles != num_particles as u32 {
-            let buffer_size = std::mem::size_of::<GpuParticle>() * num_particles;
+    // Create buffers and bind group if we have extracted params and all pipelines are ready
+    if let Some(params) = extracted_params {
+        if all_pipelines_ready {
+            info!("GPU DEBUG: Creating buffers for {} particles", params.num_particles);
             
-            // Create a buffer suitable for readback (mapping)
-            let buffer = render_device.create_buffer(&bevy::render::render_resource::BufferDescriptor {
-                label: Some("particle_readback_buffer_0"),
-                size: buffer_size as u64,
-                usage: bevy::render::render_resource::BufferUsages::COPY_DST | bevy::render::render_resource::BufferUsages::MAP_READ,
+            // Create particle buffer
+            let particle_data: Vec<GpuParticle> = (0..params.num_particles)
+                .map(|i| GpuParticle {
+                    position: [params.particle_positions[i].x, params.particle_positions[i].y],
+                    padding0: [0.0, 0.0],
+                    velocity: [params.particle_velocities[i].x, params.particle_velocities[i].y],
+                    padding1: [0.0, 0.0],
+                    density: params.particle_densities[i],
+                    pressure: params.particle_pressures[i],
+                    near_density: params.near_densities[i],
+                    near_pressure: params.near_pressures[i],
+                })
+                .collect();
+
+            let particle_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("particle_buffer"),
+                contents: bytemuck::cast_slice(&particle_data),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            });
+
+            // Create params buffer
+            let gpu_params = GpuFluidParams {
+                smoothing_radius: params.params.smoothing_radius,
+                target_density: params.params.target_density,
+                pressure_multiplier: params.params.pressure_multiplier,
+                near_pressure_multiplier: params.params.near_pressure_multiplier,
+                viscosity_strength: params.params.viscosity_strength,
+                boundary_dampening: BOUNDARY_DAMPENING,
+                particle_radius: PARTICLE_RADIUS,
+                dt: params.dt,
+                boundary_min: [params.params.boundary_min.x, params.params.boundary_min.y],
+                boundary_min_padding: [0.0, 0.0],
+                boundary_max: [params.params.boundary_max.x, params.params.boundary_max.y],
+                boundary_max_padding: [0.0, 0.0],
+                gravity: [GRAVITY_2D[0], GRAVITY_2D[1]],
+                gravity_padding: [0.0, 0.0],
+                mouse_position: [params.mouse.position.x, params.mouse.position.y],
+                mouse_radius: params.mouse.radius,
+                mouse_strength: params.mouse.strength,
+                mouse_active: if params.mouse.active { 1 } else { 0 },
+                mouse_repel: if params.mouse.repel { 1 } else { 0 },
+                padding: [0, 0],
+            };
+
+            let params_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("params_buffer"),
+                contents: bytemuck::cast_slice(&[gpu_params]),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            });
+
+            // Create spatial hash buffers
+            let spatial_keys_buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("spatial_keys_buffer"),
+                size: (params.num_particles * std::mem::size_of::<u32>()) as u64,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
             
-            gpu_results.readback_buffers[0] = Some(buffer);
-            gpu_results.readback_scheduled = false;
-            gpu_results.gpu_data.clear();
-            
-            if gpu_results.debug_log {
-                info!("Created GPU readback buffer for {} particles ({} bytes)", num_particles, buffer_size);
-            }
+            let spatial_indices_buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("spatial_indices_buffer"),
+                size: (params.num_particles * std::mem::size_of::<u32>()) as u64,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let spatial_offsets_buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("spatial_offsets_buffer"),
+                size: (params.num_particles * std::mem::size_of::<u32>()) as u64,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let target_particles_buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("target_particles_buffer"),
+                size: (params.num_particles * std::mem::size_of::<GpuParticle>()) as u64,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            // Create bind group
+            let bind_group_inner = render_device.create_bind_group(
+                "fluid_bind_group",
+                fluid_pipeline.bind_group_layout.as_ref().unwrap(),
+                &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: particle_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: spatial_keys_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: spatial_indices_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: spatial_offsets_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 5,
+                        resource: target_particles_buffer.as_entire_binding(),
+                    },
+                ],
+            );
+
+            // Update bind group resource
+            bind_group.bind_group = Some(bind_group_inner);
+            bind_group.particle_buffer = Some(particle_buffer);
+            bind_group.params_buffer = Some(params_buffer);
+            bind_group.spatial_keys_buffer = Some(spatial_keys_buffer);
+            bind_group.spatial_indices_buffer = Some(spatial_indices_buffer);
+            bind_group.spatial_offsets_buffer = Some(spatial_offsets_buffer);
+            bind_group.target_particles_buffer = Some(target_particles_buffer);
+            bind_group.num_particles = params.num_particles as u32;
+            bind_group.pipeline_ready = true;
+
+            info!("GPU DEBUG: All buffers and bind group created successfully");
+            info!("GPU DEBUG: Pipeline is now ready for compute shader execution");
+        } else {
+            info!("GPU DEBUG: Waiting for all pipelines to compile before creating buffers");
         }
+    } else {
+        info!("GPU DEBUG: No extracted params available, skipping buffer creation");
     }
 }
 
@@ -702,56 +961,199 @@ fn queue_particle_buffers(
     render_queue: Res<RenderQueue>,
     fluid_bind_group: Res<FluidBindGroup>,
     mut gpu_results: ResMut<GpuResultsBuffer>,
+    fluid_pipeline: Res<FluidPipeline>,  // ADD PIPELINE ACCESS
 ) {
     // Skip if readback is already scheduled
     if gpu_results.readback_scheduled {
         return;
     }
     
-    // Only run readback every N frames for better performance
-    let readback_frequency = 1; // Adjust based on desired performance vs smoothness
-    if gpu_results.frame_counter % readback_frequency != 0 {
+    // CRITICAL FIX: Actually run the GPU compute shaders!
+    // The previous code was only doing readback without any computation
+    if fluid_bind_group.pipeline_ready && fluid_bind_group.particle_buffer.is_some() {
+        let particle_count = fluid_bind_group.num_particles;
+        info!("GPU DEBUG: Starting compute shader execution for {} particles", particle_count);
+        
+        // Check if all required pipelines are available
+        let all_pipelines_available = 
+            fluid_pipeline.density_pressure_pipeline.is_some() &&
+            fluid_pipeline.forces_pipeline.is_some() &&
+            fluid_pipeline.integration_pipeline.is_some() &&
+            fluid_pipeline.spatial_hash_pipeline.is_some() &&
+            fluid_pipeline.reorder_pipeline.is_some() &&
+            fluid_pipeline.reorder_copyback_pipeline.is_some() &&
+            fluid_pipeline.calculate_offsets_pipeline.is_some() &&
+            fluid_pipeline.position_correction_pipeline.is_some();
+            
+        if !all_pipelines_available {
+            info!("GPU DEBUG: Not all pipelines available yet, skipping compute execution");
+            info!("GPU DEBUG: - Density pressure: {}", fluid_pipeline.density_pressure_pipeline.is_some());
+            info!("GPU DEBUG: - Forces: {}", fluid_pipeline.forces_pipeline.is_some());
+            info!("GPU DEBUG: - Integration: {}", fluid_pipeline.integration_pipeline.is_some());
+            info!("GPU DEBUG: - Spatial hash: {}", fluid_pipeline.spatial_hash_pipeline.is_some());
+            info!("GPU DEBUG: - Reorder: {}", fluid_pipeline.reorder_pipeline.is_some());
+            info!("GPU DEBUG: - Reorder copyback: {}", fluid_pipeline.reorder_copyback_pipeline.is_some());
+            info!("GPU DEBUG: - Calculate offsets: {}", fluid_pipeline.calculate_offsets_pipeline.is_some());
+            info!("GPU DEBUG: - Position correction: {}", fluid_pipeline.position_correction_pipeline.is_some());
         return;
     }
     
-    // Get the next buffer index
-    let next_index = (gpu_results.active_buffer_index + 1) % 3;
-    
-    // Initialize the buffer if needed
-    if gpu_results.readback_buffers[next_index].is_none() {
-        // Create a new buffer for GPU readback
-        let buffer_size = fluid_bind_group.num_particles as usize * std::mem::size_of::<GpuParticle>();
-        let buffer = render_device.create_buffer(&bevy::render::render_resource::BufferDescriptor {
-            label: Some("Particle Readback Buffer"),
-            size: buffer_size as u64,
-            usage: bevy::render::render_resource::BufferUsages::COPY_DST | bevy::render::render_resource::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        gpu_results.readback_buffers[next_index] = Some(buffer);
-    }
-    
-    // Copy from GPU to our readback buffer
-    if let Some(buffer) = &gpu_results.readback_buffers[next_index] {
-        // Initialize compute pass to prepare final particles state
+        info!("GPU DEBUG: All pipelines available, creating command encoder");
         let mut encoder = render_device.create_command_encoder(&bevy::render::render_resource::CommandEncoderDescriptor {
-            label: Some("Fluid Readback Encoder"),
+            label: Some("fluid_compute_encoder"),
         });
         
-        // Copy from particle buffer to our readback buffer
-        encoder.copy_buffer_to_buffer(
-            fluid_bind_group.particle_buffer.as_ref().unwrap(),
-            0,
-            buffer,
-            0,
-            (fluid_bind_group.num_particles as usize * std::mem::size_of::<GpuParticle>()) as u64,
-        );
+        let workgroup_size = 64;
+        let dispatch_size = (particle_count + workgroup_size - 1) / workgroup_size;
         
-        // Submit the command to copy data
+        info!("GPU DEBUG: Dispatch size: {} workgroups for {} particles", dispatch_size, particle_count);
+        
+        // Get bind group
+        if let Some(bind_group) = &fluid_bind_group.bind_group {
+            info!("GPU DEBUG: Starting compute pass");
+            let mut compute_pass = encoder.begin_compute_pass(&bevy::render::render_resource::ComputePassDescriptor {
+                label: Some("fluid_simulation_pass"),
+                timestamp_writes: None,
+            });
+            
+            // Step 1: Spatial hash
+            if let Some(spatial_hash_pipeline) = &fluid_pipeline.spatial_hash_pipeline {
+                info!("GPU DEBUG: Step 1 - Executing spatial hash");
+                compute_pass.set_pipeline(spatial_hash_pipeline);
+                compute_pass.set_bind_group(0, bind_group, &[]);
+                compute_pass.dispatch_workgroups(dispatch_size, 1, 1);
+            } else {
+                info!("GPU DEBUG: ERROR - Spatial hash pipeline not available!");
+            }
+            
+            // Step 2: Calculate offsets
+            if let Some(calculate_offsets_pipeline) = &fluid_pipeline.calculate_offsets_pipeline {
+                info!("GPU DEBUG: Step 2 - Executing calculate offsets");
+                compute_pass.set_pipeline(calculate_offsets_pipeline);
+                compute_pass.set_bind_group(0, bind_group, &[]);
+                compute_pass.dispatch_workgroups(dispatch_size, 1, 1);
+            } else {
+                info!("GPU DEBUG: ERROR - Calculate offsets pipeline not available!");
+            }
+            
+            // Step 3: Reorder
+            if let Some(reorder_pipeline) = &fluid_pipeline.reorder_pipeline {
+                info!("GPU DEBUG: Step 3 - Executing reorder");
+                compute_pass.set_pipeline(reorder_pipeline);
+                compute_pass.set_bind_group(0, bind_group, &[]);
+                compute_pass.dispatch_workgroups(dispatch_size, 1, 1);
+            } else {
+                info!("GPU DEBUG: ERROR - Reorder pipeline not available!");
+            }
+            
+            // Step 4: Reorder copyback
+            if let Some(reorder_copyback_pipeline) = &fluid_pipeline.reorder_copyback_pipeline {
+                info!("GPU DEBUG: Step 4 - Executing reorder copyback");
+                compute_pass.set_pipeline(reorder_copyback_pipeline);
+                compute_pass.set_bind_group(0, bind_group, &[]);
+                compute_pass.dispatch_workgroups(dispatch_size, 1, 1);
+            } else {
+                info!("GPU DEBUG: ERROR - Reorder copyback pipeline not available!");
+            }
+            
+            // Step 5: Density pressure
+            if let Some(density_pressure_pipeline) = &fluid_pipeline.density_pressure_pipeline {
+                info!("GPU DEBUG: Step 5 - Executing density pressure");
+                compute_pass.set_pipeline(density_pressure_pipeline);
+                compute_pass.set_bind_group(0, bind_group, &[]);
+                compute_pass.dispatch_workgroups(dispatch_size, 1, 1);
+            } else {
+                info!("GPU DEBUG: ERROR - Density pressure pipeline not available!");
+            }
+            
+            // Step 6: Forces
+            if let Some(forces_pipeline) = &fluid_pipeline.forces_pipeline {
+                info!("GPU DEBUG: Step 6 - Executing forces");
+                compute_pass.set_pipeline(forces_pipeline);
+                compute_pass.set_bind_group(0, bind_group, &[]);
+                compute_pass.dispatch_workgroups(dispatch_size, 1, 1);
+            } else {
+                info!("GPU DEBUG: ERROR - Forces pipeline not available!");
+            }
+            
+            // Step 7: Position correction - CRITICAL FOR PREVENTING OVERLAPS
+            if let Some(position_correction_pipeline) = &fluid_pipeline.position_correction_pipeline {
+                info!("GPU DEBUG: Step 7 - *** EXECUTING POSITION CORRECTION - CRITICAL FOR OVERLAP PREVENTION ***");
+                compute_pass.set_pipeline(position_correction_pipeline);
+                compute_pass.set_bind_group(0, bind_group, &[]);
+                compute_pass.dispatch_workgroups(dispatch_size, 1, 1);
+                info!("GPU DEBUG: Position correction dispatched successfully!");
+            } else {
+                info!("GPU DEBUG: *** ERROR - POSITION CORRECTION PIPELINE NOT AVAILABLE! THIS IS WHY PARTICLES OVERLAP! ***");
+            }
+            
+            // Step 8: Integration
+            if let Some(integration_pipeline) = &fluid_pipeline.integration_pipeline {
+                info!("GPU DEBUG: Step 8 - Executing integration");
+                compute_pass.set_pipeline(integration_pipeline);
+                compute_pass.set_bind_group(0, bind_group, &[]);
+                compute_pass.dispatch_workgroups(dispatch_size, 1, 1);
+            } else {
+                info!("GPU DEBUG: ERROR - Integration pipeline not available!");
+            }
+            
+            drop(compute_pass);
+            info!("GPU DEBUG: Compute pass completed, submitting commands");
+        } else {
+            info!("GPU DEBUG: ERROR - Bind group not available!");
+            return;
+        }
+        
+        // CRITICAL FIX: Copy GPU particle buffer to readback buffer BEFORE submitting
+        // Create readback buffer for getting results back to CPU
+        if gpu_results.readback_buffers[0].is_none() {
+            let buffer_size = std::mem::size_of::<GpuParticle>() * particle_count as usize;
+            
+            let readback_buffer = render_device.create_buffer(&BufferDescriptor {
+                label: Some("particle_readback_buffer"),
+                size: buffer_size as u64,
+                usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            
+            gpu_results.readback_buffers[0] = Some(readback_buffer);
+            info!("GPU DEBUG: Created readback buffer ({} bytes)", buffer_size);
+        }
+        
+        // CRITICAL: Copy the computed particle data from GPU buffer to readback buffer
+        if let Some(readback_buffer) = &gpu_results.readback_buffers[0] {
+            if let Some(particle_buffer) = &fluid_bind_group.particle_buffer {
+                let buffer_size = std::mem::size_of::<GpuParticle>() * particle_count as usize;
+                encoder.copy_buffer_to_buffer(
+                    particle_buffer,
+                    0,
+                    readback_buffer,
+                    0,
+                    buffer_size as u64,
+                );
+                info!("GPU DEBUG: *** CRITICAL FIX - Copying {} bytes from GPU particle buffer to readback buffer ***", buffer_size);
+            } else {
+                info!("GPU DEBUG: ERROR - Particle buffer not available for copy!");
+            }
+        } else {
+            info!("GPU DEBUG: ERROR - Readback buffer not available for copy!");
+        }
+        
+        // Submit the command buffer
         render_queue.submit(std::iter::once(encoder.finish()));
+        info!("GPU DEBUG: Commands submitted to GPU with copy operation");
         
-        // Mark that we've scheduled a readback
+        // Schedule readback
         gpu_results.readback_scheduled = true;
-        gpu_results.active_buffer_index = next_index;
+        gpu_results.frame_counter += 1;
+        info!("GPU DEBUG: Readback scheduled for frame {}", gpu_results.frame_counter);
+    } else {
+        if !fluid_bind_group.pipeline_ready {
+            info!("GPU DEBUG: Pipeline not ready yet");
+        }
+        if fluid_bind_group.particle_buffer.is_none() {
+            info!("GPU DEBUG: Particle buffer not available");
+        }
     }
 }
 
@@ -947,12 +1349,19 @@ fn sync_gpu_to_cpu_particles(
         return;
     }
     
+    // Debug: Check for overlapping particles and log GPU debug info
+    let mut overlap_count = 0;
+    let mut total_particles_checked = 0;
+    let min_distance = PARTICLE_RADIUS * 2.0;
+    
     // Update CPU entities with GPU data
-    for (i, (_, mut transform, mut particle)) in particles.iter_mut().enumerate() {
+    for (i, (entity, mut transform, mut particle)) in particles.iter_mut().enumerate() {
         if i < gpu_data.positions.len() {
+            let current_pos = gpu_data.positions[i];
+            
             // Update transform
-            transform.translation.x = gpu_data.positions[i].x;
-            transform.translation.y = gpu_data.positions[i].y;
+            transform.translation.x = current_pos.x;
+            transform.translation.y = current_pos.y;
             
             // Update particle properties
             particle.velocity = gpu_data.velocities[i];
@@ -960,6 +1369,43 @@ fn sync_gpu_to_cpu_particles(
             particle.pressure = gpu_data.pressures[i];
             particle.near_density = gpu_data.near_densities[i];
             particle.near_pressure = gpu_data.near_pressures[i];
+            
+            // Check for overlaps with other particles (debug logging)
+            for (j, other_pos) in gpu_data.positions.iter().enumerate() {
+                if i == j { continue; }
+                
+                let distance = current_pos.distance(*other_pos);
+                if distance < min_distance {
+                    overlap_count += 1;
+                    if overlap_count <= 5 { // Limit spam
+                        println!("GPU 2D OVERLAP: Particle {} overlapping with particle {}! Distance: {:.3}, Min required: {:.3}", 
+                                 i, j, distance, min_distance);
+                    }
+                }
+            }
+            total_particles_checked += 1;
+        }
+    }
+    
+    // Log summary every few frames
+    static mut FRAME_COUNTER: u32 = 0;
+    unsafe {
+        FRAME_COUNTER += 1;
+        if FRAME_COUNTER % 60 == 0 { // Log every 60 frames
+            if overlap_count > 0 {
+                println!("GPU 2D DEBUG: Frame {}: Found {} overlaps out of {} particles checked", 
+                         FRAME_COUNTER, overlap_count / 2, total_particles_checked); // Divide by 2 since we count each pair twice
+            }
+            
+            // Log GPU shader debug info from first few particles
+            for i in 0..3.min(gpu_data.positions.len()) {
+                // Note: We can't directly access padding fields from GPU data here
+                // The debug info would need to be extracted during GPU readback
+                println!("GPU 2D DEBUG: Particle {}: pos=({:.2}, {:.2}), vel=({:.2}, {:.2}), density={:.2}", 
+                         i, gpu_data.positions[i].x, gpu_data.positions[i].y,
+                         gpu_data.velocities[i].x, gpu_data.velocities[i].y,
+                         gpu_data.densities[i]);
+            }
         }
     }
     
