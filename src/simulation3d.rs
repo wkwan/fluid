@@ -7,7 +7,7 @@ use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
 use rand::{self, Rng};
 use serde::{Serialize, Deserialize};
-use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_3D};
+use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_3D, BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, KILL_Y_THRESHOLD_3D};
 
 // 3D particle component
 #[derive(Component)]
@@ -17,6 +17,7 @@ pub struct Particle3D {
     pub pressure: f32,
     pub near_density: f32,
     pub near_pressure: f32,
+    pub previous_position: Vec3,  // Add this for prediction-relaxation scheme
 }
 
 // Marker for 3D entities to allow cleanup
@@ -75,10 +76,10 @@ impl Default for MouseInteraction3D {
 
 // Constants for 3D sim (match 2D values where possible)
 const GRAVITY_VEC3: Vec3 = Vec3::new(GRAVITY_3D[0], GRAVITY_3D[1], GRAVITY_3D[2]);
-const BOUNDARY_MIN: Vec3 = Vec3::new(-300.0, -300.0, -300.0);
-const BOUNDARY_MAX: Vec3 = Vec3::new(300.0, 300.0, 300.0);
+const BOUNDARY_MIN: Vec3 = Vec3::new(BOUNDARY_3D_MIN[0], BOUNDARY_3D_MIN[1], BOUNDARY_3D_MIN[2]);
+const BOUNDARY_MAX: Vec3 = Vec3::new(BOUNDARY_3D_MAX[0], BOUNDARY_3D_MAX[1], BOUNDARY_3D_MAX[2]);
 const DUCK_SIZE: f32 = PARTICLE_RADIUS * 5.0; // 5x bigger than particles
-const KILL_Y_THRESHOLD: f32 = -400.0; // Below this Y value, particles are recycled
+const KILL_Y_THRESHOLD: f32 = KILL_Y_THRESHOLD_3D;
 const MAX_ANGULAR_VELOCITY: f32 = 3.0; // Maximum angular velocity in radians per second
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
@@ -94,12 +95,12 @@ pub struct Fluid3DParams {
 impl Default for Fluid3DParams {
     fn default() -> Self {
         Self {
-            smoothing_radius: 35.0,
-            target_density: 1200.0,  // Reduced from 1500 to allow settling
-            pressure_multiplier: 100.0,  // Reduced from 150 to let gravity dominate
-            near_pressure_multiplier: 12.0,  // Reduced from 25 to allow settling
-            viscosity_strength: 0.12,  // Slightly reduced for better flow
-            collision_damping: 0.95,
+            smoothing_radius: 7.0,          // Reduced from 10.0 for more localized interactions
+            target_density: 30.0,          // Same as 2D working value  
+            pressure_multiplier: 100.0,    // Same as 2D working value
+            near_pressure_multiplier: 50.0, // Same as 2D working value
+            viscosity_strength: 0.0,       // Same as 2D working value (no viscosity)
+            collision_damping: 0.85,       // Keep reasonable collision damping
         }
     }
 }
@@ -115,9 +116,9 @@ pub struct SpawnRegion3D {
 impl Default for SpawnRegion3D {
     fn default() -> Self {
         Self {
-            min: Vec3::new(-15.0, 100.0, -15.0),    // Reduced from -25.0 to -15.0 (smaller area)
-            max: Vec3::new(15.0, 150.0, 15.0),      // Reduced from 25.0 to 15.0 and 200.0 to 150.0 (smaller volume)
-            spacing: PARTICLE_RADIUS * 1.5,         // Increased from 0.95 to 1.5 (looser packing)
+            min: Vec3::new(-15.0, 150.0, -15.0),    // Moved Y from -150.0 to 150.0 (near top of boundary)
+            max: Vec3::new(15.0, 180.0, 15.0),     // Moved Y from -50.0 to 180.0 (near top of boundary)
+            spacing: PARTICLE_RADIUS * 1.55,       // Reduced from 2.2 to 1.55 to double particle count
             active: true,
         }
     }
@@ -248,6 +249,7 @@ pub fn spawn_particles_3d(
                         pressure: 0.0,
                         near_density: 0.0,
                         near_pressure: 0.0,
+                        previous_position: pos,
                     },
                     Marker3D,
                 ));
@@ -341,7 +343,10 @@ pub fn apply_external_forces_3d(
     let dt = time.delta_secs();
     
     for (transform, mut particle) in particles.iter_mut() {
-        // Apply gravity
+        // Store previous position for prediction-relaxation
+        particle.previous_position = transform.translation;
+        
+        // Apply gravity (external forces modify velocity)
         particle.velocity += GRAVITY_VEC3 * dt;
         
         // Apply mouse force if active
@@ -369,6 +374,24 @@ pub fn apply_external_forces_3d(
     }
 }
 
+pub fn predict_positions_3d(
+    time: Res<Time>,
+    mut query: Query<(&mut Transform, &Particle3D)>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        return;
+    }
+    
+    let dt = time.delta_secs();
+    
+    for (mut transform, particle) in query.iter_mut() {
+        // Predict position based on current velocity
+        let predicted_pos = particle.previous_position + particle.velocity * dt;
+        transform.translation = predicted_pos;
+    }
+}
+
 pub fn update_spatial_hash_3d(
     mut spatial_hash: ResMut<SpatialHashResource3D>,
     particle_query: Query<(Entity, &Transform), With<Particle3D>>,
@@ -385,7 +408,7 @@ pub fn update_spatial_hash_3d(
     }
 }
 
-pub fn calculate_density_pressure_3d(
+pub fn calculate_density_3d(
     mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
     spatial_hash: Res<SpatialHashResource3D>,
     params: Res<Fluid3DParams>,
@@ -396,64 +419,158 @@ pub fn calculate_density_pressure_3d(
     }
 
     let smoothing_radius = params.smoothing_radius;
-    let smoothing_radius_squared = smoothing_radius * smoothing_radius;
-    let math = FluidMath3D::new(smoothing_radius);
-    let target_density = params.target_density;
-    let pressure_mult = params.pressure_multiplier;
-    let near_pressure_mult = params.near_pressure_multiplier;
-
-    // Cache positions and store entities order
-    let mut positions: Vec<Vec3> = Vec::with_capacity(particles_q.iter().count());
-    let mut entities: Vec<Entity> = Vec::with_capacity(positions.capacity());
-
-    for (e, t, _) in particles_q.iter() {
-        entities.push(e);
-        positions.push(t.translation);
+    
+    // Cache positions
+    let positions: Vec<(Entity, Vec3)> = particles_q
+        .iter()
+        .map(|(entity, transform, _)| (entity, transform.translation))
+        .collect();
+    
+    let mut position_map = std::collections::HashMap::with_capacity(positions.len());
+    for (entity, position) in &positions {
+        position_map.insert(*entity, *position);
     }
-
-    let count = positions.len();
-    let mut densities = vec![0.0f32; count];
-    let mut near_densities = vec![0.0f32; count];
-
-    for i in 0..count {
-        let pos_i = positions[i];
+    
+    // Calculate densities using paper's kernels
+    for (_entity_i, transform_i, mut particle) in particles_q.iter_mut() {
+        let position_i = transform_i.translation;
+        let neighbors = spatial_hash.spatial_hash.get_neighbors(position_i, smoothing_radius);
+        
         let mut density = 0.0;
         let mut near_density = 0.0;
         
-        // Get neighbors using spatial hash
-        let neighbors = spatial_hash.spatial_hash.get_neighbors(pos_i, smoothing_radius);
-        
-        // Add self-contribution
-        density += math.poly6(0.0, smoothing_radius_squared);
-        near_density += math.spiky_pow2(0.0, smoothing_radius);
-        
-        // Add neighbor contributions
-        for &neighbor_entity in &neighbors {
-            if let Ok((_, transform, _)) = particles_q.get(neighbor_entity) {
-                let r_vec = pos_i - transform.translation;
-                let r2 = r_vec.length_squared();
-                if r2 < smoothing_radius_squared && r2 > 1e-10 {
-                    let r = r2.sqrt();
-                    density += math.poly6(r2, smoothing_radius_squared);
-                    near_density += math.spiky_pow2(r, smoothing_radius);
+        for neighbor_entity in neighbors {
+            if let Some(&position_j) = position_map.get(&neighbor_entity) {
+                let offset = position_i - position_j;
+                let distance = offset.length();
+                
+                if distance < smoothing_radius {
+                    let q = distance / smoothing_radius;
+                    
+                    // Paper equation 1: density kernel (1-r/h)²
+                    density += (1.0 - q) * (1.0 - q);
+                    
+                    // Paper equation 4: near-density kernel (1-r/h)³
+                    near_density += (1.0 - q) * (1.0 - q) * (1.0 - q);
                 }
             }
         }
         
-        densities[i] = density;
-        near_densities[i] = near_density;
+        particle.density = density;
+        particle.near_density = near_density;
     }
+}
 
-    // Write back density/pressure
-    for (idx, entity) in entities.iter().enumerate() {
-        if let Ok((_, _, mut part)) = particles_q.get_mut(*entity) {
-            let density = densities[idx];
-            let near_density = near_densities[idx];
-            part.density = density;
-            part.near_density = near_density;
-            part.pressure = (density - target_density) * pressure_mult;
-            part.near_pressure = near_density * near_pressure_mult;
+pub fn double_density_relaxation_3d(
+    fluid_params: Res<Fluid3DParams>,
+    spatial_hash: Res<SpatialHashResource3D>,
+    time: Res<Time>,
+    mut particle_query: Query<(Entity, &mut Transform, &mut Particle3D)>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if sim_dim.get() != &SimulationDimension::Dim3 {
+        return;
+    }
+    
+    let dt = time.delta_secs();
+    let dt_squared = dt * dt;
+    let smoothing_radius = fluid_params.smoothing_radius;
+    let target_density = fluid_params.target_density;
+    let k = fluid_params.pressure_multiplier;
+    let k_near = fluid_params.near_pressure_multiplier;
+    
+    // Cache particle data
+    let particle_data: Vec<(Entity, Vec3, f32, f32)> = particle_query
+        .iter()
+        .map(|(entity, transform, particle)| 
+            (entity, transform.translation, particle.density, particle.near_density))
+        .collect();
+    
+    let mut position_map = std::collections::HashMap::with_capacity(particle_data.len());
+    let mut density_map = std::collections::HashMap::with_capacity(particle_data.len());
+    
+    for &(entity, position, density, near_density) in &particle_data {
+        position_map.insert(entity, position);
+        density_map.insert(entity, (density, near_density));
+    }
+    
+    // Calculate position displacements for each particle
+    let mut displacements = std::collections::HashMap::with_capacity(particle_data.len());
+    
+    for &(entity_i, position_i, density_i, near_density_i) in &particle_data {
+        let neighbors = spatial_hash.spatial_hash.get_neighbors(position_i, smoothing_radius);
+        
+        // Calculate pressure and near-pressure (paper equations 2 and 5)
+        let pressure_i = k * (density_i - target_density);
+        let near_pressure_i = k_near * near_density_i;
+        
+        let mut displacement_i = Vec3::ZERO;
+        
+        for neighbor_entity in neighbors {
+            if neighbor_entity == entity_i {
+                continue;
+            }
+            
+            if let Some(&position_j) = position_map.get(&neighbor_entity) {
+                let offset = position_i - position_j;
+                let distance = offset.length();
+                
+                if distance > 0.0 && distance < smoothing_radius {
+                    let direction = offset / distance;
+                    let q = distance / smoothing_radius;
+                    
+                    // Paper equation 6: displacement calculation
+                    let mut displacement_magnitude = dt_squared * (
+                        pressure_i * (1.0 - q) +
+                        near_pressure_i * (1.0 - q) * (1.0 - q)
+                    );
+                    
+                    // Add strong repulsion force when particles get too close to prevent overlapping
+                    let min_distance = PARTICLE_RADIUS * 2.0; // Minimum separation distance
+                    if distance < min_distance {
+                        let overlap_factor = (min_distance - distance) / min_distance;
+                        let repulsion_force = overlap_factor * overlap_factor * 500.0 * dt_squared;
+                        displacement_magnitude += repulsion_force;
+                    }
+                    
+                    let displacement = direction * displacement_magnitude;
+                    
+                    // Apply half displacement to each particle (action-reaction)
+                    displacement_i -= displacement * 0.5;
+                    
+                    // Store displacement for neighbor
+                    *displacements.entry(neighbor_entity).or_insert(Vec3::ZERO) += displacement * 0.5;
+                }
+            }
         }
+        
+        displacements.insert(entity_i, displacement_i);
+    }
+    
+    // Apply displacements to particle positions
+    for (entity, mut transform, _) in particle_query.iter_mut() {
+        if let Some(&displacement) = displacements.get(&entity) {
+            let new_pos = transform.translation + displacement;
+            transform.translation = new_pos;
+        }
+    }
+}
+
+pub fn recompute_velocities_3d(
+    time: Res<Time>,
+    mut query: Query<(&Transform, &mut Particle3D)>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if sim_dim.get() != &SimulationDimension::Dim3 {
+        return;
+    }
+    
+    let dt = time.delta_secs();
+    
+    for (transform, mut particle) in query.iter_mut() {
+        let current_position = transform.translation;
+        // Velocity = (current_position - previous_position) / dt
+        particle.velocity = (current_position - particle.previous_position) / dt;
     }
 }
 
@@ -649,6 +766,7 @@ pub fn recycle_particles_3d(
             particle.pressure = 0.0;
             particle.near_density = 0.0;
             particle.near_pressure = 0.0;
+            particle.previous_position = pos;
         }
     }
 }
@@ -1210,8 +1328,8 @@ fn deform_ground_at_point(
     world_point: Vec3,
     ground_transform: &Transform,
 ) {
-    let deformation_radius = 50.0; // Radius of deformation
-    let deformation_depth = 20.0; // How deep to make the cavity
+    let deformation_radius = 12.5; // Reduced from 50.0 to quarter size
+    let deformation_depth = 5.0;   // Reduced from 20.0 to quarter size
     
     // Convert world point to local ground coordinates
     let local_point = ground_transform.compute_matrix().inverse().transform_point3(world_point);

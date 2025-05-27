@@ -5,10 +5,10 @@ use crate::spatial_hash::SpatialHash;
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera, spawn_2d_camera, despawn_2d_camera};
 use bevy::prelude::Camera3d;
-use crate::constants::GRAVITY_2D;
+use crate::constants::{GRAVITY_2D, BOUNDARY_DAMPENING, PARTICLE_RADIUS, REST_DENSITY};
 use crate::simulation3d::{
-    apply_external_forces_3d, apply_pressure_viscosity_3d, calculate_density_pressure_3d,
-    integrate_positions_3d, setup_3d_environment, spawn_particles_3d, update_spatial_hash_3d,
+    apply_external_forces_3d, predict_positions_3d, calculate_density_3d, double_density_relaxation_3d, 
+    recompute_velocities_3d, integrate_positions_3d, setup_3d_environment, spawn_particles_3d, update_spatial_hash_3d,
     Fluid3DParams, Marker3D, Particle3D, SpawnRegion3D, recycle_particles_3d, MouseInteraction3D,
     handle_mouse_input_3d, update_mouse_indicator_3d, handle_ground_deformation, GroundDeformationTimer,
 };
@@ -120,9 +120,11 @@ impl Plugin for SimulationPlugin {
                 (
                     handle_mouse_input_3d,
                     apply_external_forces_3d,
+                    predict_positions_3d,
                     update_spatial_hash_3d,
-                    calculate_density_pressure_3d,
-                    apply_pressure_viscosity_3d,
+                    calculate_density_3d,
+                    double_density_relaxation_3d,
+                    recompute_velocities_3d,
                     integrate_positions_3d,
                     recycle_particles_3d,
                 )
@@ -178,9 +180,6 @@ struct DebugUiState {
 
 // Constants - now using shared constants from constants module
 const GRAVITY: Vec2 = Vec2::new(GRAVITY_2D[0], GRAVITY_2D[1]);
-const BOUNDARY_DAMPENING: f32 = 0.3;
-const PARTICLE_RADIUS: f32 = 2.5;  // Reduced from 5.0 to make particles smaller
-const REST_DENSITY: f32 = 1500.0;
 
 // Components
 #[derive(Component)]

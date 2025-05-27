@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use crate::GpuState;
 use crate::simulation3d::{Particle3D, Fluid3DParams};
 use crate::simulation::{MouseInteraction};
+use crate::constants::{BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, GPU_PARTICLE_RADIUS, GRAVITY_3D};
 
 /// Plugin for GPU-accelerated 3D Fluid Simulation
 pub struct GpuSim3DPlugin;
@@ -433,13 +434,13 @@ fn prepare_fluid_bind_groups_3d(
         near_pressure_multiplier: extracted_data.params.near_pressure_multiplier,
         viscosity_strength: extracted_data.params.viscosity_strength,
         boundary_dampening: extracted_data.params.collision_damping,
-        particle_radius: 5.0,
+        particle_radius: GPU_PARTICLE_RADIUS,
         dt: extracted_data.dt,
-        boundary_min: [ -300.0, -300.0, -300.0 ],
+        boundary_min: BOUNDARY_3D_MIN,
         boundary_min_padding: 0.0,
-        boundary_max: [ 300.0, 300.0, 300.0 ],
+        boundary_max: BOUNDARY_3D_MAX,
         boundary_max_padding: 0.0,
-        gravity: [ 0.0, -10.0, 0.0 ],
+        gravity: GRAVITY_3D,
         gravity_padding: 0.0,
         mouse_position: [ 0.0, 0.0, 0.0 ],
         mouse_radius: 0.0,
