@@ -316,9 +316,9 @@ pub fn handle_mouse_input_3d(
 
     // Update mouse interaction state (disabled when Draw Lake mode is active)
     if !draw_lake_mode.enabled {
-        mouse_interaction_3d.active = mouse_buttons.pressed(MouseButton::Left) || 
-                                      mouse_buttons.pressed(MouseButton::Right);
-        mouse_interaction_3d.repel = mouse_buttons.pressed(MouseButton::Right);
+    mouse_interaction_3d.active = mouse_buttons.pressed(MouseButton::Left) || 
+                                  mouse_buttons.pressed(MouseButton::Right);
+    mouse_interaction_3d.repel = mouse_buttons.pressed(MouseButton::Right);
     } else {
         mouse_interaction_3d.active = false;
         mouse_interaction_3d.repel = false;
@@ -385,17 +385,18 @@ pub fn update_spatial_hash_3d(
 pub fn calculate_density_pressure_3d(
     mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
     spatial_hash: Res<SpatialHashResource3D>,
+    params: Res<Fluid3DParams>,
     sim_dim: Res<State<SimulationDimension>>,
 ) {
     if sim_dim.get() != &SimulationDimension::Dim3 {
         return;
     }
 
-    let smoothing_radius: f32 = 35.0; // TODO param
+    let smoothing_radius = params.smoothing_radius;
     let smoothing_radius_squared = smoothing_radius * smoothing_radius;
     let math = FluidMath3D::new(smoothing_radius);
-    let target_density = 1000.0;
-    let pressure_mult = 200.0;
+    let target_density = params.target_density;
+    let pressure_mult = params.pressure_multiplier;
 
     // Cache positions and store entities order
     let mut positions: Vec<Vec3> = Vec::with_capacity(particles_q.iter().count());

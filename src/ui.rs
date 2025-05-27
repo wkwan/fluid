@@ -39,7 +39,6 @@ fn draw_ui(
                 
                 if ui.add(button).clicked() {
                     draw_lake_mode.enabled = !draw_lake_mode.enabled;
-                    info!("Draw Lake mode toggled: {}", draw_lake_mode.enabled);
                 }
                 
                 ui.add_space(5.0);

@@ -374,9 +374,9 @@ fn handle_mouse_input(
                     mouse_interaction.position = world_position;
                     // Disable mouse forces when Draw Lake mode is active
                     if !draw_lake_mode.enabled {
-                        mouse_interaction.active = mouse_buttons.pressed(MouseButton::Left) || 
-                                                   mouse_buttons.pressed(MouseButton::Right);
-                        mouse_interaction.repel = mouse_buttons.pressed(MouseButton::Right);
+                    mouse_interaction.active = mouse_buttons.pressed(MouseButton::Left) || 
+                                               mouse_buttons.pressed(MouseButton::Right);
+                    mouse_interaction.repel = mouse_buttons.pressed(MouseButton::Right);
                     } else {
                         mouse_interaction.active = false;
                         mouse_interaction.repel = false;

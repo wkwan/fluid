@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 pub struct SpatialHash3D {
-    cell_size: f32,
+    pub cell_size: f32,
     hash_map: HashMap<(i32, i32, i32), Vec<Entity>>,
 }
 

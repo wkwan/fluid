@@ -100,6 +100,7 @@ impl Plugin for SimulationPlugin {
            .add_systems(Update, (
                apply_external_forces,
                update_spatial_hash,
+               reset_particle_properties_on_param_change,
                calculate_density,
                calculate_pressure_force,
                calculate_viscosity,
@@ -110,6 +111,7 @@ impl Plugin for SimulationPlugin {
             // ===== 3D Setup =====
             .add_systems(Update, crate::simulation3d::setup_3d_environment.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, crate::simulation3d::spawn_particles_3d.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, update_spatial_hash_on_radius_change_3d.run_if(in_state(SimulationDimension::Dim3)))
 
             // ===== 3D Physics =====
             .add_systems(
@@ -243,8 +245,10 @@ struct SpatialHashResource {
 
 impl Default for SpatialHashResource {
     fn default() -> Self {
+        // Initialize with the default FluidParams smoothing radius
+        let default_params = FluidParams::default();
         Self {
-            spatial_hash: SpatialHash::new(35.0),
+            spatial_hash: SpatialHash::new(default_params.smoothing_radius),
         }
     }
 }
@@ -267,7 +271,7 @@ fn setup_simulation(mut commands: Commands) {
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(10.0),
-            left: Val::Px(10.0),
+            left: Val::Px(140.0), // Moved right to align with FPS text and avoid overlap with side panel
             ..default()
         },
     ));
@@ -278,7 +282,7 @@ fn setup_simulation(mut commands: Commands) {
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(30.0),
-            left: Val::Px(10.0),
+            left: Val::Px(140.0), // Moved right to avoid overlap with side panel (120px + 20px margin)
             ..default()
         },
         FpsText,
@@ -307,7 +311,6 @@ fn handle_draw_lake_toggle(
 ) {
     if keys.just_pressed(KeyCode::KeyL) {
         draw_lake_mode.enabled = !draw_lake_mode.enabled;
-        info!("Draw Lake mode toggled: {}", draw_lake_mode.enabled);
     }
 }
 
@@ -398,32 +401,33 @@ fn handle_input(
     }
     
     // Parameter adjustment keys - only when debug UI is visible
+    // Using arrow keys and other non-camera keys to avoid WASD conflict
     if debug_ui_state.visible {
-        // Smoothing radius
-        if keys.pressed(KeyCode::KeyQ) {
+        // Smoothing radius (Up/Down arrows)
+        if keys.pressed(KeyCode::ArrowUp) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
+                fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
             } else {
                 fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius + 0.5).min(100.0);
             }
         }
-        if keys.pressed(KeyCode::KeyA) {
+        if keys.pressed(KeyCode::ArrowDown) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
+                fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
             } else {
                 fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(5.0);
             }
         }
         
-        // Pressure multiplier
-        if keys.pressed(KeyCode::KeyW) {
+        // Pressure multiplier (Left/Right arrows)
+        if keys.pressed(KeyCode::ArrowRight) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
             } else {
                 fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier + 5.0).min(500.0);
             }
         }
-        if keys.pressed(KeyCode::KeyS) {
+        if keys.pressed(KeyCode::ArrowLeft) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
             } else {
@@ -431,23 +435,25 @@ fn handle_input(
             }
         }
         
-        // Surface tension
-        if keys.pressed(KeyCode::KeyE) {
-            fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier + 1.0).min(100.0);
-        }
-        if keys.pressed(KeyCode::KeyD) {
-            fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier - 1.0).max(5.0);
+        // Surface tension (T/G keys) - only available in 2D mode
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+            if keys.pressed(KeyCode::KeyT) {
+                fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier + 1.0).min(100.0);
+            }
+            if keys.pressed(KeyCode::KeyG) {
+                fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier - 1.0).max(5.0);
+            }
         }
         
-        // Viscosity
-        if keys.pressed(KeyCode::KeyR) {
+        // Viscosity (Y/H keys)
+        if keys.pressed(KeyCode::KeyY) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
             } else {
                 fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength + 0.01).min(0.5);
             }
         }
-        if keys.pressed(KeyCode::KeyF) {
+        if keys.pressed(KeyCode::KeyH) {
             if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
             } else {
@@ -504,12 +510,18 @@ fn update_settings_text(
     color_params: &ColorMapParams,
     sim_dim: &State<SimulationDimension>,
 ) {
+    let surface_tension_text = if *sim_dim.get() == SimulationDimension::Dim2 {
+        format!("[T/G] Surface Tension: {:.1}\n", fluid_params.near_pressure_multiplier)
+    } else {
+        String::new() // No surface tension in 3D mode
+    };
+
     debug_ui_state.settings_text = format!(
         "Simulation Parameters (F1 to hide)\n\n\
-        [Q/A] Smoothing Radius: {:.1}\n\
-        [W/S] Pressure Multiplier: {:.1}\n\
-        [E/D] Surface Tension: {:.1}\n\
-        [R/F] Viscosity: {:.3}\n\n\
+        [Up/Down] Smoothing Radius: {:.1}\n\
+        [Left/Right] Pressure Multiplier: {:.1}\n\
+        {}\
+        [Y/H] Viscosity: {:.3}\n\n\
         Target Density: {:.1}\n\
         Mouse Force: {:.1}\n\
         Mouse Radius: {:.1}\n\n\
@@ -536,13 +548,17 @@ fn update_settings_text(
         } else {
             fluid3d_params.pressure_multiplier
         },
-        fluid_params.near_pressure_multiplier,
+        surface_tension_text,
         if *sim_dim.get() == SimulationDimension::Dim2 {
             fluid_params.viscosity_strength
         } else {
             fluid3d_params.viscosity_strength
         },
-        fluid_params.target_density,
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+            fluid_params.target_density
+        } else {
+            fluid3d_params.target_density
+        },
         mouse_interaction.strength,
         mouse_interaction.radius,
         if gpu_state.enabled { "Enabled" } else { "Disabled (CPU)" },
@@ -620,13 +636,48 @@ fn apply_external_forces(
 }
 
 fn update_spatial_hash(
+    fluid_params: Res<FluidParams>,
     mut spatial_hash: ResMut<SpatialHashResource>,
     particle_query: Query<(Entity, &Transform), With<Particle>>,
 ) {
-    spatial_hash.spatial_hash.clear();
+    // Check if the smoothing radius has changed and recreate spatial hash if needed
+    let current_cell_size = spatial_hash.spatial_hash.cell_size;
+    let new_radius = fluid_params.smoothing_radius;
     
+    // Use a more reasonable threshold (0.1) and always recreate if there's a significant difference
+    if (new_radius - current_cell_size).abs() > 0.1 {
+        spatial_hash.spatial_hash = SpatialHash::new(new_radius);
+    } else {
+        // Just clear the existing hash without recreating
+        spatial_hash.spatial_hash.clear();
+    }
+    
+    // Repopulate the spatial hash with current particle positions
     for (entity, transform) in particle_query.iter() {
         spatial_hash.spatial_hash.insert(transform.translation.truncate(), entity);
+    }
+}
+
+// System to reset particle properties when parameters change significantly
+// This ensures existing particles respond to parameter changes immediately
+fn reset_particle_properties_on_param_change(
+    fluid_params: Res<FluidParams>,
+    spatial_hash: Res<SpatialHashResource>,
+    mut particle_query: Query<&mut Particle>,
+) {
+    // Check if parameters have changed significantly
+    let current_cell_size = spatial_hash.spatial_hash.cell_size;
+    let new_radius = fluid_params.smoothing_radius;
+    
+    // If smoothing radius changed significantly, reset particle properties
+    if (new_radius - current_cell_size).abs() > 0.1 {
+        // Reset density and pressure values so they get recalculated with new parameters
+        for mut particle in particle_query.iter_mut() {
+            particle.density = 0.0;
+            particle.pressure = 0.0;
+            particle.near_density = 0.0;
+            particle.near_pressure = 0.0;
+        }
     }
 }
 
@@ -1092,5 +1143,20 @@ fn handle_duck_spawning(
 
     if keys.just_pressed(KeyCode::Space) {
         spawn_duck_ev.write(SpawnDuck);
+    }
+}
+
+
+
+// System to update spatial hash when smoothing radius changes in 3D
+fn update_spatial_hash_on_radius_change_3d(
+    fluid3d_params: Res<Fluid3DParams>,
+    mut spatial_hash_3d: ResMut<SpatialHashResource3D>,
+) {
+    // Check if the smoothing radius has changed from the spatial hash's current cell size
+    if (fluid3d_params.smoothing_radius - spatial_hash_3d.spatial_hash.cell_size).abs() > 0.1 {
+        // Update the spatial hash with the new smoothing radius
+        spatial_hash_3d.spatial_hash = crate::spatial_hash3d::SpatialHash3D::new(fluid3d_params.smoothing_radius);
+        info!("Updated 3D spatial hash cell size to: {}", fluid3d_params.smoothing_radius);
     }
 }
