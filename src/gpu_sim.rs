@@ -11,12 +11,14 @@ use bevy::{
         RenderApp, Render, RenderSet, Extract, ExtractSchedule,
     },
     asset::AssetServer,
+    log::info,
 };
 use bytemuck::{Pod, Zeroable, cast_slice};
 use std::borrow::Cow;
 
 use crate::simulation::{Particle, FluidParams, MouseInteraction};
 use crate::gpu_fluid::GpuState;
+use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_2D};
 
 /// Plugin for GPU-accelerated Fluid Simulation
 pub struct GpuSimPlugin;
@@ -136,6 +138,7 @@ struct FluidComputePipelines {
     reorder_pipeline: Option<ComputePipeline>,
     density_pressure_pipeline: Option<ComputePipeline>,
     pressure_force_pipeline: Option<ComputePipeline>,
+    position_correction_pipeline: Option<ComputePipeline>,
     viscosity_pipeline: Option<ComputePipeline>,
     update_positions_pipeline: Option<ComputePipeline>,
     bind_group_layout: Option<BindGroupLayout>,
@@ -149,6 +152,7 @@ impl Default for FluidComputePipelines {
             reorder_pipeline: None,
             density_pressure_pipeline: None,
             pressure_force_pipeline: None,
+            position_correction_pipeline: None,
             viscosity_pipeline: None,
             update_positions_pipeline: None,
             bind_group_layout: None,
@@ -202,14 +206,14 @@ fn extract_fluid_data(
         pressure_multiplier: fluid_params.pressure_multiplier,
         near_pressure_multiplier: fluid_params.near_pressure_multiplier,
         viscosity_strength: fluid_params.viscosity_strength,
-        boundary_dampening: 0.3, // Hardcoded for now, would be better to expose
-        particle_radius: 5.0,    // Hardcoded for now, would be better to expose
+        boundary_dampening: BOUNDARY_DAMPENING,
+        particle_radius: PARTICLE_RADIUS,
         dt: time.delta_secs(),
         boundary_min: [fluid_params.boundary_min.x, fluid_params.boundary_min.y],
         boundary_min_padding: [0.0, 0.0],
         boundary_max: [fluid_params.boundary_max.x, fluid_params.boundary_max.y],
         boundary_max_padding: [0.0, 0.0],
-        gravity: [0.0, -9.81],  // Hardcoded gravity, would be better to make configurable
+        gravity: GRAVITY_2D,
         gravity_padding: [0.0, 0.0],
         mouse_position: [mouse_interaction.position.x, mouse_interaction.position.y],
         mouse_radius: mouse_interaction.radius,
@@ -435,6 +439,21 @@ fn prepare_fluid_bind_groups(
         fluid_pipelines.pressure_force_pipeline = pipeline_cache.get_compute_pipeline(pipeline_id).cloned();
     }
     
+    if fluid_pipelines.position_correction_pipeline.is_none() {
+        let shader = asset_server.load("shaders/position_correction.wgsl");
+        let pipeline_descriptor = ComputePipelineDescriptor {
+            label: Some(Cow::from("fluid_position_correction_pipeline")),
+            layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
+            push_constant_ranges: Vec::new(),
+            shader,
+            shader_defs: Vec::new(),
+            entry_point: Cow::from("main"),
+            zero_initialize_workgroup_memory: false,
+        };
+        let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+        fluid_pipelines.position_correction_pipeline = pipeline_cache.get_compute_pipeline(pipeline_id).cloned();
+    }
+    
     if fluid_pipelines.viscosity_pipeline.is_none() {
         let shader = asset_server.load("shaders/viscosity.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
@@ -577,6 +596,7 @@ fn queue_fluid_compute(
        fluid_pipelines.reorder_pipeline.is_none() ||
        fluid_pipelines.density_pressure_pipeline.is_none() ||
        fluid_pipelines.pressure_force_pipeline.is_none() ||
+       fluid_pipelines.position_correction_pipeline.is_none() ||
        fluid_pipelines.viscosity_pipeline.is_none() ||
        fluid_pipelines.update_positions_pipeline.is_none() ||
        fluid_bind_groups.bind_group.is_none() {
@@ -700,11 +720,25 @@ fn queue_fluid_compute(
     // Submit fourth batch
     render_queue.submit(std::iter::once(encoder.finish()));
     
-    // Create command encoder for the fifth batch (integration)
+    // Create command encoder for the fifth batch (position correction)
     let mut encoder = render_device.create_command_encoder(&Default::default());
     
     {
-        // 7. Update positions and handle collisions - intense math calculations
+        // 7. Position correction - prevent particle overlapping using displacement
+        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+        compute_pass.set_pipeline(fluid_pipelines.position_correction_pipeline.as_ref().unwrap());
+        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
+        compute_pass.dispatch_workgroups(neighbor_config.count_x, neighbor_config.count_y, neighbor_config.count_z);
+    }
+    
+    // Submit fifth batch
+    render_queue.submit(std::iter::once(encoder.finish()));
+    
+    // Create command encoder for the sixth batch (final position update)
+    let mut encoder = render_device.create_command_encoder(&Default::default());
+    
+    {
+        // 8. Update positions and handle collisions - final integration step
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
         compute_pass.set_pipeline(fluid_pipelines.update_positions_pipeline.as_ref().unwrap());
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);

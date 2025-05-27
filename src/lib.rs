@@ -13,6 +13,7 @@ pub mod fluid3d;
 pub mod gpu_fluid3d;
 pub mod gpu_render3d;
 pub mod presets;
+pub mod constants;
 
 use bevy::prelude::*;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;

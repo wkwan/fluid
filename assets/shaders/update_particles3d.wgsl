@@ -15,9 +15,12 @@ struct FluidParams3D {
     pressure_multiplier: f32,
     near_pressure_multiplier: f32,
     viscosity: f32,
-    gravity: vec3<f32>,
+    boundary_dampening: f32,
+    particle_radius: f32,
+    dt: f32,
     bounds_min: vec3<f32>,
     bounds_max: vec3<f32>,
+    gravity: vec3<f32>,
 }
 
 const PI: f32 = 3.14159265359;
@@ -31,29 +34,29 @@ const MAX_NEIGHBORS: u32 = 128u;
 @group(0) @binding(4) var<storage, read> neighbor_counts: array<u32>;
 @group(0) @binding(5) var<storage, read> neighbor_indices: array<u32>;
 
-// Helper function to handle boundary collisions
-fn handle_boundary_collision(pos: vec3<f32>, vel: vec3<f32>, min_bounds: vec3<f32>, max_bounds: vec3<f32>) -> vec3<f32> {
+// Helper function to handle boundary collisions with damping
+fn handle_boundary_collision(pos: vec3<f32>, vel: vec3<f32>, min_bounds: vec3<f32>, max_bounds: vec3<f32>, damping: f32) -> vec3<f32> {
     var new_vel = vel;
     
     // X-axis boundaries
     if (pos.x < min_bounds.x) {
-        new_vel.x = abs(new_vel.x);
+        new_vel.x = abs(new_vel.x) * damping;
     } else if (pos.x > max_bounds.x) {
-        new_vel.x = -abs(new_vel.x);
+        new_vel.x = -abs(new_vel.x) * damping;
     }
     
     // Y-axis boundaries
     if (pos.y < min_bounds.y) {
-        new_vel.y = abs(new_vel.y);
+        new_vel.y = abs(new_vel.y) * damping;
     } else if (pos.y > max_bounds.y) {
-        new_vel.y = -abs(new_vel.y);
+        new_vel.y = -abs(new_vel.y) * damping;
     }
     
     // Z-axis boundaries
     if (pos.z < min_bounds.z) {
-        new_vel.z = abs(new_vel.z);
+        new_vel.z = abs(new_vel.z) * damping;
     } else if (pos.z > max_bounds.z) {
-        new_vel.z = -abs(new_vel.z);
+        new_vel.z = -abs(new_vel.z) * damping;
     }
     
     return new_vel;
@@ -70,7 +73,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var particle = particles[particle_idx];
     
     // Apply forces and update position using Verlet integration
-    let dt = 0.016; // Fixed time step
+    let dt = params.dt; // Use dynamic time step from parameters
     let dt2 = dt * dt;
     
     // Update velocity with forces
@@ -87,7 +90,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         particle.position,
         particle.velocity,
         params.bounds_min,
-        params.bounds_max
+        params.bounds_max,
+        params.boundary_dampening
     );
     
     // Clamp position to bounds

@@ -268,12 +268,16 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
             // Calculate pressure force using derivatives of the smoothing kernels
             if (neighbor_density > 0.0) {
                 // Standard pressure force
-                pressure_force += dir_to_neighbor * spiky_pow2_derivative(dst, radius) 
+                let pressure_force_magnitude = spiky_pow2_derivative(dst, radius) 
                                 * shared_pressure / max(0.001, neighbor_density);
                 
                 // Near pressure force (provides more stable interactions at very close distances)
-                pressure_force += dir_to_neighbor * spiky_pow3_derivative(dst, radius) 
+                let near_pressure_force_magnitude = spiky_pow3_derivative(dst, radius) 
                                 * shared_near_pressure / max(0.001, neighbor_near_density);
+                
+                // Combine forces (removed additional_repulsion - will be handled in position correction)
+                let total_force_magnitude = pressure_force_magnitude + near_pressure_force_magnitude;
+                pressure_force += dir_to_neighbor * total_force_magnitude;
             }
             
             curr_index = curr_index + 1u;

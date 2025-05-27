@@ -106,11 +106,11 @@ impl FluidMath3D {
     #[inline]
     pub fn new(smoothing_radius: f32) -> Self {
         // Pre-compute powers of h to avoid redundant work
-        let inv_pi = 1.0 / std::f32::consts::PI;
+        let _inv_pi = 1.0 / std::f32::consts::PI;
         let h2 = smoothing_radius * smoothing_radius; // h^2
         let h3 = h2 * smoothing_radius;               // h^3
-        let h4 = h2 * h2;                             // h^4
-        let h5 = h2 * h3;                             // h^5
+        let _h4 = h2 * h2;                             // h^4
+        let _h5 = h2 * h3;                             // h^5
         let h6 = h3 * h3;                             // h^6
         let h9 = h6 * h3;                             // h^9
 

@@ -7,6 +7,7 @@ use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
 use rand::{self, Rng};
 use serde::{Serialize, Deserialize};
+use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_3D};
 
 // 3D particle component
 #[derive(Component)]
@@ -73,12 +74,10 @@ impl Default for MouseInteraction3D {
 }
 
 // Constants for 3D sim (match 2D values where possible)
-const GRAVITY_3D: Vec3 = Vec3::new(0.0, -9.81, 0.0);
-pub const BOUNDARY_MIN: Vec3 = Vec3::new(-300.0, -300.0, -300.0);
-pub const BOUNDARY_MAX: Vec3 = Vec3::new(300.0, 300.0, 300.0);
-const PARTICLE_RADIUS: f32 = 5.0;
+const GRAVITY_VEC3: Vec3 = Vec3::new(GRAVITY_3D[0], GRAVITY_3D[1], GRAVITY_3D[2]);
+const BOUNDARY_MIN: Vec3 = Vec3::new(-300.0, -300.0, -300.0);
+const BOUNDARY_MAX: Vec3 = Vec3::new(300.0, 300.0, 300.0);
 const DUCK_SIZE: f32 = PARTICLE_RADIUS * 5.0; // 5x bigger than particles
-const BOUNDARY_DAMPENING: f32 = 0.3;
 const KILL_Y_THRESHOLD: f32 = -400.0; // Below this Y value, particles are recycled
 const MAX_ANGULAR_VELOCITY: f32 = 3.0; // Maximum angular velocity in radians per second
 
@@ -87,16 +86,20 @@ pub struct Fluid3DParams {
     pub smoothing_radius: f32,
     pub target_density: f32,
     pub pressure_multiplier: f32,
+    pub near_pressure_multiplier: f32,
     pub viscosity_strength: f32,
+    pub collision_damping: f32,
 }
 
 impl Default for Fluid3DParams {
     fn default() -> Self {
         Self {
             smoothing_radius: 35.0,
-            target_density: 1000.0,
-            pressure_multiplier: 200.0,
-            viscosity_strength: 0.1,
+            target_density: 1200.0,  // Reduced from 1500 to allow settling
+            pressure_multiplier: 100.0,  // Reduced from 150 to let gravity dominate
+            near_pressure_multiplier: 12.0,  // Reduced from 25 to allow settling
+            viscosity_strength: 0.12,  // Slightly reduced for better flow
+            collision_damping: 0.95,
         }
     }
 }
@@ -112,9 +115,9 @@ pub struct SpawnRegion3D {
 impl Default for SpawnRegion3D {
     fn default() -> Self {
         Self {
-            min: Vec3::new(-25.0, 100.0, -25.0),
-            max: Vec3::new(25.0, 200.0, 25.0),
-            spacing: PARTICLE_RADIUS * 1.15,
+            min: Vec3::new(-15.0, 100.0, -15.0),    // Reduced from -25.0 to -15.0 (smaller area)
+            max: Vec3::new(15.0, 150.0, 15.0),      // Reduced from 25.0 to 15.0 and 200.0 to 150.0 (smaller volume)
+            spacing: PARTICLE_RADIUS * 1.5,         // Increased from 0.95 to 1.5 (looser packing)
             active: true,
         }
     }
@@ -339,7 +342,7 @@ pub fn apply_external_forces_3d(
     
     for (transform, mut particle) in particles.iter_mut() {
         // Apply gravity
-        particle.velocity += GRAVITY_3D * dt;
+        particle.velocity += GRAVITY_VEC3 * dt;
         
         // Apply mouse force if active
         if mouse_interaction_3d.active {
@@ -397,6 +400,7 @@ pub fn calculate_density_pressure_3d(
     let math = FluidMath3D::new(smoothing_radius);
     let target_density = params.target_density;
     let pressure_mult = params.pressure_multiplier;
+    let near_pressure_mult = params.near_pressure_multiplier;
 
     // Cache positions and store entities order
     let mut positions: Vec<Vec3> = Vec::with_capacity(particles_q.iter().count());
@@ -409,36 +413,46 @@ pub fn calculate_density_pressure_3d(
 
     let count = positions.len();
     let mut densities = vec![0.0f32; count];
+    let mut near_densities = vec![0.0f32; count];
 
     for i in 0..count {
         let pos_i = positions[i];
         let mut density = 0.0;
+        let mut near_density = 0.0;
         
         // Get neighbors using spatial hash
         let neighbors = spatial_hash.spatial_hash.get_neighbors(pos_i, smoothing_radius);
         
         // Add self-contribution
         density += math.poly6(0.0, smoothing_radius_squared);
+        near_density += math.spiky_pow2(0.0, smoothing_radius);
         
         // Add neighbor contributions
         for &neighbor_entity in &neighbors {
             if let Ok((_, transform, _)) = particles_q.get(neighbor_entity) {
-                let r2 = (pos_i - transform.translation).length_squared();
-                if r2 < smoothing_radius_squared {
+                let r_vec = pos_i - transform.translation;
+                let r2 = r_vec.length_squared();
+                if r2 < smoothing_radius_squared && r2 > 1e-10 {
+                    let r = r2.sqrt();
                     density += math.poly6(r2, smoothing_radius_squared);
+                    near_density += math.spiky_pow2(r, smoothing_radius);
                 }
             }
         }
         
         densities[i] = density;
+        near_densities[i] = near_density;
     }
 
     // Write back density/pressure
     for (idx, entity) in entities.iter().enumerate() {
         if let Ok((_, _, mut part)) = particles_q.get_mut(*entity) {
             let density = densities[idx];
+            let near_density = near_densities[idx];
             part.density = density;
+            part.near_density = near_density;
             part.pressure = (density - target_density) * pressure_mult;
+            part.near_pressure = near_density * near_pressure_mult;
         }
     }
 }
@@ -492,8 +506,10 @@ pub fn apply_pressure_viscosity_3d(
                     // Pressure force (spiky gradient)
                     let dir = r / dist;
                     let pressure_term = (p_j.pressure + p_j.pressure) * 0.5; // symmetric
+                    let near_pressure_term = (p_j.near_pressure + p_j.near_pressure) * 0.5; // symmetric
                     let grad = math.spiky_pow3_derivative(dist, smoothing_radius);
-                    pressure_force -= dir * pressure_term * grad;
+                    let near_grad = math.spiky_pow2_derivative(dist, smoothing_radius);
+                    pressure_force -= dir * (pressure_term * grad + near_pressure_term * near_grad);
 
                     // Viscosity force (Laplacian)
                     let lap = math.spiky_pow2(dist, smoothing_radius);
@@ -518,12 +534,23 @@ pub fn apply_pressure_viscosity_3d(
 pub fn integrate_positions_3d(
     time: Res<Time>,
     mut particles: Query<(&mut Transform, &mut Particle3D)>,
+    params: Res<Fluid3DParams>,
+    spatial_hash: Res<SpatialHashResource3D>,
     sim_dim: Res<State<SimulationDimension>>,
 ) {
     if sim_dim.get() != &SimulationDimension::Dim3 {
         return;
     }
     let dt = time.delta_secs();
+    let collision_damping = params.collision_damping;
+    let particle_diameter = PARTICLE_RADIUS * 2.0;
+    
+    // Cache positions for particle-particle collision detection
+    let mut positions: Vec<Vec3> = Vec::new();
+    for (transform, _) in particles.iter() {
+        positions.push(transform.translation);
+    }
+    
     for (mut transform, mut particle) in particles.iter_mut() {
         transform.translation += particle.velocity * dt;
 
@@ -534,28 +561,60 @@ pub fn integrate_positions_3d(
         // X-axis
         if pos.x < BOUNDARY_MIN.x + PARTICLE_RADIUS {
             pos.x = BOUNDARY_MIN.x + PARTICLE_RADIUS;
-            vel.x = -vel.x * BOUNDARY_DAMPENING;
+            vel.x = -vel.x * collision_damping;
         } else if pos.x > BOUNDARY_MAX.x - PARTICLE_RADIUS {
             pos.x = BOUNDARY_MAX.x - PARTICLE_RADIUS;
-            vel.x = -vel.x * BOUNDARY_DAMPENING;
+            vel.x = -vel.x * collision_damping;
         }
 
         // Y-axis
         if pos.y < BOUNDARY_MIN.y + PARTICLE_RADIUS {
             pos.y = BOUNDARY_MIN.y + PARTICLE_RADIUS;
-            vel.y = -vel.y * BOUNDARY_DAMPENING;
+            vel.y = -vel.y * collision_damping;
         } else if pos.y > BOUNDARY_MAX.y - PARTICLE_RADIUS {
             pos.y = BOUNDARY_MAX.y - PARTICLE_RADIUS;
-            vel.y = -vel.y * BOUNDARY_DAMPENING;
+            vel.y = -vel.y * collision_damping;
         }
 
         // Z-axis
         if pos.z < BOUNDARY_MIN.z + PARTICLE_RADIUS {
             pos.z = BOUNDARY_MIN.z + PARTICLE_RADIUS;
-            vel.z = -vel.z * BOUNDARY_DAMPENING;
+            vel.z = -vel.z * collision_damping;
         } else if pos.z > BOUNDARY_MAX.z - PARTICLE_RADIUS {
             pos.z = BOUNDARY_MAX.z - PARTICLE_RADIUS;
-            vel.z = -vel.z * BOUNDARY_DAMPENING;
+            vel.z = -vel.z * collision_damping;
+        }
+
+        // Handle particle-to-particle collisions
+        let neighbors = spatial_hash.spatial_hash.get_neighbors(pos, particle_diameter);
+        
+        for &neighbor_pos in &positions {
+            if (neighbor_pos - pos).length() < 0.001 {
+                continue; // Skip self (same position)
+            }
+            
+            let offset = pos - neighbor_pos;
+            let distance = offset.length();
+            
+            // Check if particles are overlapping
+            if distance > 0.0 && distance < particle_diameter {
+                let overlap = particle_diameter - distance;
+                let separation_direction = offset.normalize();
+                
+                // Move this particle away by half the overlap
+                let separation = separation_direction * (overlap * 0.5);
+                pos += separation;
+                
+                // Apply collision response to velocity
+                let velocity_along_normal = vel.dot(separation_direction);
+                
+                // Only resolve if particles are moving towards each other
+                if velocity_along_normal < 0.0 {
+                    let restitution = 0.3; // Bounce factor
+                    let impulse = -(1.0 + restitution) * velocity_along_normal;
+                    vel += separation_direction * impulse;
+                }
+            }
         }
 
         transform.translation = pos;
@@ -825,7 +884,7 @@ pub fn update_duck_physics(
     
     for (mut transform, mut duck) in ducks.iter_mut() {
         // Apply gravity
-        duck.velocity += GRAVITY_3D * dt;
+        duck.velocity += GRAVITY_VEC3 * dt;
         
         // Update position
         transform.translation += duck.velocity * dt;

@@ -17,6 +17,7 @@ use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 
 use crate::simulation::{Particle, FluidParams, MouseInteraction};
+use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING};
 
 pub struct GpuFluidPlugin;
 
@@ -889,8 +890,8 @@ fn sync_gpu_to_cpu_particles(
         let dt = time.delta_secs();
         let boundary_min = fluid_params.boundary_min;
         let boundary_max = fluid_params.boundary_max;
-        let boundary_dampening = 0.3;
-        let particle_radius = 5.0;
+        let boundary_dampening = BOUNDARY_DAMPENING;
+        let particle_radius = PARTICLE_RADIUS;
         
         // Apply simplified CPU-like physics to keep particles moving
         for (_, mut transform, mut particle) in particles.iter_mut() {

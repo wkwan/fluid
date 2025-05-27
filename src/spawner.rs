@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::simulation::{Particle, FluidParams, SimulationDimension};
+use crate::constants::PARTICLE_RADIUS;
 
 pub struct SpawnerPlugin;
 
@@ -30,7 +31,7 @@ impl Default for SpawnRegions {
                 size: Vec2::new(300.0, 200.0),
                 debug_color: Color::srgb(0.0, 0.0, 1.0),
             }],
-            spawn_density: 6.0,
+            spawn_density: 8.0,
             initial_velocity: Vec2::new(0.0, -50.0),
             jitter_strength: 10.0,
         }
@@ -68,7 +69,7 @@ fn handle_spawn_input(
         let spawned_particles = spawn_in_regions(&spawn_regions, &mut rng);
         
         // Create a shared circle mesh
-        let circle_mesh = meshes.add(Circle::new(5.0));
+        let circle_mesh = meshes.add(Circle::new(PARTICLE_RADIUS));
         
         for (position, velocity) in spawned_particles {
             // Create a unique material for each particle
@@ -89,6 +90,7 @@ fn handle_spawn_input(
                     pressure: 0.0,
                     near_density: 0.0,
                     near_pressure: 0.0,
+                    previous_position: position,
                 },
             ));
         }
@@ -142,7 +144,7 @@ fn spawn_particles(
     ));
     
     // Create shared circle mesh
-    let circle_mesh = meshes.add(Circle::new(5.0));
+    let circle_mesh = meshes.add(Circle::new(PARTICLE_RADIUS));
     
     // Spawn initial particles
     let spawned_particles = spawn_in_regions(&spawn_regions, &mut rng);
@@ -166,6 +168,7 @@ fn spawn_particles(
                 pressure: 0.0,
                 near_density: 0.0,
                 near_pressure: 0.0,
+                previous_position: position,
             },
         ));
     }
@@ -179,7 +182,7 @@ fn spawn_in_regions(
     
     for region in &spawn_regions.regions {
         let area = region.size.x * region.size.y;
-        let particle_size = 10.0; // Particle diameter
+        let particle_size = 12.0; // Increased from 8.0 for more spacing
         let max_particles = (area / (particle_size * particle_size) * spawn_regions.spawn_density) as usize;
         
         for _ in 0..max_particles {
@@ -216,7 +219,7 @@ fn ensure_particles_2d(
     }
 
     let mut rng = rand::thread_rng();
-    let circle_mesh = meshes.add(Circle::new(5.0));
+    let circle_mesh = meshes.add(Circle::new(PARTICLE_RADIUS));
     for (pos, vel) in spawn_in_regions(&spawn_regions, &mut rng) {
         let material = materials.add(Color::srgb(0.0, 0.3, 1.0));
         commands.spawn((
@@ -233,6 +236,7 @@ fn ensure_particles_2d(
                 pressure: 0.0,
                 near_density: 0.0,
                 near_pressure: 0.0,
+                previous_position: pos,
             },
         ));
     }

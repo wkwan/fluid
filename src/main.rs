@@ -10,6 +10,7 @@ mod gpu_fluid;
 mod simulation3d;
 mod orbit_camera;
 mod ui;
+mod constants;
 use fluid::spatial_hash3d;
 mod presets;
 
