@@ -68,7 +68,7 @@ impl Default for MouseInteraction3D {
             position: Vec3::ZERO,
             active: false,
             repel: false,
-            strength: 2000.0,  // Reduced from 10000.0 for gentler interaction
+            strength: 3000.0,  // Balanced mouse interaction force
             radius: 150.0,     // Increased from 50.0
         }
     }
@@ -95,10 +95,10 @@ pub struct Fluid3DParams {
 impl Default for Fluid3DParams {
     fn default() -> Self {
         Self {
-            smoothing_radius: 3.0,          // Default to 3.0 for tighter interactions
-            target_density: 30.0,          // Same as 2D working value  
-            pressure_multiplier: 100.0,    // Same as 2D working value
-            near_pressure_multiplier: 50.0, // Same as 2D working value
+            smoothing_radius: 3.0,          // Reduced for tighter particle interactions
+            target_density: 40.0,          // Increased from 30.0 for stronger density
+            pressure_multiplier: 120.0,    // Increased from 100.0 for better cohesion
+            near_pressure_multiplier: 60.0, // Increased from 50.0 for better surface tension
             viscosity_strength: 0.0,       // Same as 2D working value (no viscosity)
             collision_damping: 0.85,       // Keep reasonable collision damping
         }
@@ -116,9 +116,9 @@ pub struct SpawnRegion3D {
 impl Default for SpawnRegion3D {
     fn default() -> Self {
         Self {
-            min: Vec3::new(-15.0, 150.0, -15.0),    // Moved Y from -150.0 to 150.0 (near top of boundary)
-            max: Vec3::new(15.0, 180.0, 15.0),     // Moved Y from -50.0 to 180.0 (near top of boundary)
-            spacing: PARTICLE_RADIUS * 1.55,       // Reduced from 2.2 to 1.55 to double particle count
+            min: Vec3::new(-20.0, 120.0, -20.0),    // Slightly larger area
+            max: Vec3::new(20.0, 160.0, 20.0),     // More compact height
+            spacing: PARTICLE_RADIUS * 1.4,       // Reduced from 1.55 for denser packing
             active: true,
         }
     }

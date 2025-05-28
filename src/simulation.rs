@@ -1237,14 +1237,13 @@ fn update_spatial_hash_on_radius_change_3d(
 fn render_free_surface_wrapper(
     surface_debug_settings: Res<SurfaceDebugSettings>,
     sim_dim: Res<State<SimulationDimension>>,
-    grid_settings: Res<MarchingGridSettings>,
+    grid_settings: ResMut<MarchingGridSettings>,
     particles_3d: Query<&Transform, (With<crate::simulation3d::Particle3D>, Without<Particle>)>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials_3d: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    density_texture: Option<ResMut<crate::marching::DensityTexture>>,
     existing_mesh: Query<Entity, With<crate::marching::FreeSurfaceMesh>>,
+    time: Res<Time>,
 ) {
     // Check if surface rendering is enabled
     if !surface_debug_settings.show_surface {
@@ -1263,8 +1262,7 @@ fn render_free_surface_wrapper(
         commands,
         meshes,
         materials_3d,
-        images,
-        density_texture,
         existing_mesh,
+        time,
     );
 }
