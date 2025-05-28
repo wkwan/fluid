@@ -17,6 +17,7 @@ use bevy::prelude::{States, Reflect};
 use bevy::time::Timer;
 use bevy::time::TimerMode;
 use crate::presets::{PresetManager3D, load_presets_system};
+use crate::marching::MarchingGridSettings;
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -82,6 +83,8 @@ impl Plugin for SimulationPlugin {
            .init_resource::<SpatialHashResource>()
            .init_resource::<ColorMapParams>()
            .init_resource::<DrawLakeMode>()
+           .init_resource::<MarchingGridSettings>()
+           .init_resource::<SurfaceDebugSettings>()
             .init_resource::<Fluid3DParams>()
             .init_resource::<SpawnRegion3D>()
             .init_resource::<SpatialHashResource3D>()
@@ -141,6 +144,7 @@ impl Plugin for SimulationPlugin {
            .add_systems(Update, update_fps_display)
             .add_systems(Update, track_max_velocity)
             .add_systems(Update, handle_reset_sim)
+            .add_systems(Update, render_free_surface_wrapper)
             // Orbit camera (3D only)
             .add_systems(Update, (
                 spawn_orbit_camera,
@@ -250,6 +254,20 @@ struct FpsText;
 
 // Constants - now using shared constants from constants module
 const GRAVITY: Vec2 = Vec2::new(GRAVITY_2D[0], GRAVITY_2D[1]);
+
+// Resource for surface debug settings (moved from ui module for accessibility)
+#[derive(Resource)]
+pub struct SurfaceDebugSettings {
+    pub show_surface: bool,
+}
+
+impl Default for SurfaceDebugSettings {
+    fn default() -> Self {
+        Self {
+            show_surface: true,
+        }
+    }
+}
 
 // Systems
 fn setup_simulation(mut commands: Commands) {
@@ -373,92 +391,92 @@ fn handle_input(
     }
     
     // Parameter adjustment keys - always available now (no debug UI visibility check)
-    // Smoothing radius (Up/Down arrows)
-    if keys.pressed(KeyCode::ArrowUp) {
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
-        } else {
-            fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius + 0.5).min(100.0);
+        // Smoothing radius (Up/Down arrows)
+        if keys.pressed(KeyCode::ArrowUp) {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
+                fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
+            } else {
+                fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius + 0.5).min(100.0);
+            }
         }
-    }
-    if keys.pressed(KeyCode::ArrowDown) {
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
-        } else {
-            fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(1.0);
+        if keys.pressed(KeyCode::ArrowDown) {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
+                fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
+            } else {
+                fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(1.0);
+            }
         }
+        
+        // Pressure multiplier (Left/Right arrows)
+        if keys.pressed(KeyCode::ArrowRight) {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
+            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
+            } else {
+                fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier + 5.0).min(500.0);
+            }
+        }
+        if keys.pressed(KeyCode::ArrowLeft) {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
+            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
+            } else {
+                fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier - 5.0).max(50.0);
+            }
+        }
+        
+        // Surface tension (T/R keys) - only available in 2D mode
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+            if keys.pressed(KeyCode::KeyT) {
+                fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier + 1.0).min(100.0);
+            }
+            if keys.pressed(KeyCode::KeyR) {
+                fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier - 1.0).max(5.0);
+            }
+        } else {
+            // Surface tension for 3D mode (T/R keys)
+            if keys.pressed(KeyCode::KeyT) {
+                fluid3d_params.near_pressure_multiplier = (fluid3d_params.near_pressure_multiplier + 0.1).min(10.0);
+            }
+            if keys.pressed(KeyCode::KeyR) {
+                fluid3d_params.near_pressure_multiplier = (fluid3d_params.near_pressure_multiplier - 0.1).max(0.0);
+            }
+        }
+        
+        // Collision damping (B/V keys) - only available in 3D mode
+        if *sim_dim.get() == SimulationDimension::Dim3 {
+            if keys.pressed(KeyCode::KeyB) {
+                fluid3d_params.collision_damping = (fluid3d_params.collision_damping + 0.01).min(1.0);
+            }
+            if keys.pressed(KeyCode::KeyV) {
+                fluid3d_params.collision_damping = (fluid3d_params.collision_damping - 0.01).max(0.0);
+            }
+        }
+        
+        // Viscosity (Y/H keys)
+        if keys.pressed(KeyCode::KeyY) {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
+            fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
+            } else {
+                fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength + 0.01).min(0.5);
+            }
+        }
+        if keys.pressed(KeyCode::KeyH) {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
+            fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
+            } else {
+                fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength - 0.01).max(0.0);
+            }
+        }
+        
+        // Reset to defaults
+        if keys.just_pressed(KeyCode::KeyX) {
+            if *sim_dim.get() == SimulationDimension::Dim2 {
+            *fluid_params = FluidParams::default();
+            } else {
+                *fluid3d_params = Fluid3DParams::default();
+            }
+            *mouse_interaction = MouseInteraction::default();
     }
     
-    // Pressure multiplier (Left/Right arrows)
-    if keys.pressed(KeyCode::ArrowRight) {
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-        fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
-        } else {
-            fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier + 5.0).min(500.0);
-        }
-    }
-    if keys.pressed(KeyCode::ArrowLeft) {
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-        fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
-        } else {
-            fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier - 5.0).max(50.0);
-        }
-    }
-    
-    // Surface tension (T/R keys) - only available in 2D mode
-    if *sim_dim.get() == SimulationDimension::Dim2 {
-        if keys.pressed(KeyCode::KeyT) {
-            fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier + 1.0).min(100.0);
-        }
-        if keys.pressed(KeyCode::KeyR) {
-            fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier - 1.0).max(5.0);
-        }
-    } else {
-        // Surface tension for 3D mode (T/R keys)
-        if keys.pressed(KeyCode::KeyT) {
-            fluid3d_params.near_pressure_multiplier = (fluid3d_params.near_pressure_multiplier + 0.1).min(10.0);
-        }
-        if keys.pressed(KeyCode::KeyR) {
-            fluid3d_params.near_pressure_multiplier = (fluid3d_params.near_pressure_multiplier - 0.1).max(0.0);
-        }
-    }
-    
-    // Collision damping (B/V keys) - only available in 3D mode
-    if *sim_dim.get() == SimulationDimension::Dim3 {
-        if keys.pressed(KeyCode::KeyB) {
-            fluid3d_params.collision_damping = (fluid3d_params.collision_damping + 0.01).min(1.0);
-        }
-        if keys.pressed(KeyCode::KeyV) {
-            fluid3d_params.collision_damping = (fluid3d_params.collision_damping - 0.01).max(0.0);
-        }
-    }
-    
-    // Viscosity (Y/H keys)
-    if keys.pressed(KeyCode::KeyY) {
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-        fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
-        } else {
-            fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength + 0.01).min(0.5);
-        }
-    }
-    if keys.pressed(KeyCode::KeyH) {
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-        fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
-        } else {
-            fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength - 0.01).max(0.0);
-        }
-    }
-    
-    // Reset to defaults
-    if keys.just_pressed(KeyCode::KeyX) {
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-        *fluid_params = FluidParams::default();
-        } else {
-            *fluid3d_params = Fluid3DParams::default();
-        }
-        *mouse_interaction = MouseInteraction::default();
-    }
-
     // tick cooldown
     toggle_cooldown.timer.tick(time.delta());
 
@@ -1213,4 +1231,40 @@ fn update_spatial_hash_on_radius_change_3d(
         spatial_hash_3d.spatial_hash = crate::spatial_hash3d::SpatialHash3D::new(fluid3d_params.smoothing_radius);
         info!("Updated 3D spatial hash cell size to: {}", fluid3d_params.smoothing_radius);
     }
+}
+
+// Wrapper system to pass UI settings to marching system
+fn render_free_surface_wrapper(
+    surface_debug_settings: Res<SurfaceDebugSettings>,
+    sim_dim: Res<State<SimulationDimension>>,
+    grid_settings: Res<MarchingGridSettings>,
+    particles_3d: Query<&Transform, (With<crate::simulation3d::Particle3D>, Without<Particle>)>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials_3d: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    density_texture: Option<ResMut<crate::marching::DensityTexture>>,
+    existing_mesh: Query<Entity, With<crate::marching::FreeSurfaceMesh>>,
+) {
+    // Check if surface rendering is enabled
+    if !surface_debug_settings.show_surface {
+        // Remove existing mesh if surface rendering is disabled
+        for entity in existing_mesh.iter() {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+
+    // Call the actual rendering function
+    crate::marching::render_free_surface(
+        sim_dim,
+        grid_settings,
+        particles_3d,
+        commands,
+        meshes,
+        materials_3d,
+        images,
+        density_texture,
+        existing_mesh,
+    );
 }

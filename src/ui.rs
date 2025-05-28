@@ -4,6 +4,7 @@ use crate::simulation::{DrawLakeMode, FluidParams, MouseInteraction, ColorMapPar
 use crate::simulation3d::{Fluid3DParams, MouseInteraction3D};
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::simulation::SimulationDimension;
+use crate::simulation::SurfaceDebugSettings;
 
 pub struct UiPlugin;
 
@@ -26,6 +27,7 @@ fn draw_ui(
     sim_dim: Res<State<SimulationDimension>>,
     mut next_sim_dim: ResMut<NextState<SimulationDimension>>,
     mut reset_ev: EventWriter<crate::simulation::ResetSim>,
+    mut surface_debug_settings: ResMut<SurfaceDebugSettings>,
 ) {
     egui::SidePanel::left("control_panel")
         .resizable(true)
@@ -61,7 +63,7 @@ fn draw_ui(
                     ui.label("Hotkey: L");
                 if draw_lake_mode.enabled {
                     ui.colored_label(egui::Color32::YELLOW, "Mouse forces disabled");
-                    }
+                }
                 });
             if terrain_response.header_response.clicked() {
                 ui.separator();
@@ -136,7 +138,7 @@ fn draw_ui(
                         ui.label("Force Strength:");
                         ui.add(egui::Slider::new(&mut mouse_interaction.strength, 100.0..=5000.0).step_by(100.0));
                         mouse_interaction_3d.strength = mouse_interaction.strength;
-                    });
+            });
                     
                     ui.horizontal(|ui| {
                         if ui.button("1000").clicked() { 
@@ -188,6 +190,12 @@ fn draw_ui(
                 });
             if color_response.header_response.clicked() {
                 ui.separator();
+            }
+            
+            // Surface debug toggle
+            let mut show_surface = surface_debug_settings.show_surface;
+            if ui.checkbox(&mut show_surface, "Show Free Surface").changed() {
+                surface_debug_settings.show_surface = show_surface;
             }
             
             // Fluid parameters based on current dimension

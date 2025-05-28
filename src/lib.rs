@@ -1,6 +1,7 @@
 pub mod math;
 pub mod spatial_hash;
 pub mod spatial_hash3d;
+pub mod marching;
 pub mod simulation;
 pub mod simulation3d;
 pub mod gpu_fluid;

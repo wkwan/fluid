@@ -9,6 +9,7 @@ use bevy::{
 };
 use bytemuck::{Pod, Zeroable};
 use crate::simulation::Particle;
+use crate::simulation::SimulationDimension;
 
 // Custom instance data for batched rendering
 #[repr(C)]

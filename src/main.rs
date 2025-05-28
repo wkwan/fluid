@@ -6,6 +6,7 @@ mod simulation;
 mod spawner;
 mod spatial_hash;
 mod math;
+mod marching;
 mod gpu_fluid;
 mod simulation3d;
 mod orbit_camera;
@@ -18,6 +19,7 @@ use simulation::SimulationPlugin;
 use spawner::SpawnerPlugin;
 use gpu_fluid::GpuFluidPlugin;
 use ui::UiPlugin;
+use simulation::SurfaceDebugSettings;
 
 fn main() {
     App::new()
