@@ -18,6 +18,7 @@ use bevy::time::Timer;
 use bevy::time::TimerMode;
 use crate::presets::{PresetManager3D, load_presets_system};
 use crate::marching::MarchingGridSettings;
+use crate::marching::RayMarchPlugin;
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -94,8 +95,9 @@ impl Plugin for SimulationPlugin {
             .init_resource::<GroundDeformationTimer>()
             .init_resource::<crate::marching::MarchingGridSettings>()
             .init_resource::<crate::marching::RayMarchingSettings>()
+            .add_plugins(crate::marching::RayMarchPlugin)
             .add_systems(Startup, load_presets_system)
-            .add_systems(Startup, setup_simulation)
+           .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
             .add_event::<SpawnDuck>()
            .add_systems(Update, handle_input)
@@ -1254,13 +1256,19 @@ fn render_free_surface_wrapper(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials_3d: ResMut<Assets<StandardMaterial>>,
+    mut raymarch_materials: ResMut<Assets<crate::marching::RayMarchMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     existing_mesh: Query<Entity, With<crate::marching::FreeSurfaceMesh>>,
+    existing_volume: Query<Entity, With<crate::marching::RayMarchVolume>>,
     time: Res<Time>,
 ) {
     // Check if surface rendering is enabled
     if !surface_debug_settings.show_surface {
-        // Remove existing mesh if surface rendering is disabled
+        // Remove existing mesh and volume if surface rendering is disabled
         for entity in existing_mesh.iter() {
+            commands.entity(entity).despawn();
+        }
+        for entity in existing_volume.iter() {
             commands.entity(entity).despawn();
         }
         return;
@@ -1275,7 +1283,10 @@ fn render_free_surface_wrapper(
         commands,
         meshes,
         materials_3d,
+        raymarch_materials,
+        images,
         existing_mesh,
+        existing_volume,
         time,
     );
 }
