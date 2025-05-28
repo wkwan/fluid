@@ -92,8 +92,10 @@ impl Plugin for SimulationPlugin {
             .init_resource::<ToggleCooldown>()
             .init_resource::<PresetManager3D>()
             .init_resource::<GroundDeformationTimer>()
+            .init_resource::<crate::marching::MarchingGridSettings>()
+            .init_resource::<crate::marching::RayMarchingSettings>()
             .add_systems(Startup, load_presets_system)
-           .add_systems(Startup, setup_simulation)
+            .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
             .add_event::<SpawnDuck>()
            .add_systems(Update, handle_input)
@@ -161,6 +163,8 @@ impl Plugin for SimulationPlugin {
             .add_systems(Update, preset_hotkey_3d)
             // Handle duck spawning with spacebar in 3D mode
             .add_systems(Update, handle_duck_spawning);
+
+        app.register_type::<SimulationDimension>();
     }
 }
 
@@ -346,8 +350,15 @@ fn handle_input(
     mut reset_ev: EventWriter<ResetSim>,
     mut fluid3d_params: ResMut<Fluid3DParams>,
     mut toggle_cooldown: ResMut<ToggleCooldown>,
+    mut raymarching_settings: ResMut<crate::marching::RayMarchingSettings>,
     time: Res<Time>,
 ) {
+
+    // Toggle raymarching with Q key (only in 3D mode)
+    if *sim_dim.get() == SimulationDimension::Dim3 && keys.just_pressed(KeyCode::KeyQ) {
+        raymarching_settings.enabled = !raymarching_settings.enabled;
+        info!("Ray marching: {}", if raymarching_settings.enabled { "enabled" } else { "disabled" });
+    }
 
     // Toggle force strength with number keys
     if keys.just_pressed(KeyCode::Digit1) {
@@ -1238,6 +1249,7 @@ fn render_free_surface_wrapper(
     surface_debug_settings: Res<SurfaceDebugSettings>,
     sim_dim: Res<State<SimulationDimension>>,
     grid_settings: ResMut<MarchingGridSettings>,
+    raymarching_settings: Res<crate::marching::RayMarchingSettings>,
     particles_3d: Query<&Transform, (With<crate::simulation3d::Particle3D>, Without<Particle>)>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1258,6 +1270,7 @@ fn render_free_surface_wrapper(
     crate::marching::render_free_surface(
         sim_dim,
         grid_settings,
+        raymarching_settings,
         particles_3d,
         commands,
         meshes,

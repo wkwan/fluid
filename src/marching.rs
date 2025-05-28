@@ -15,6 +15,26 @@ pub struct DensityTexture {
     pub bounds_max: Vec3,
 }
 
+// Resource to store ray marching settings
+#[derive(Resource)]
+pub struct RayMarchingSettings {
+    pub enabled: bool,
+    pub quality: f32,
+    pub step_count: u32,
+    pub density_multiplier: f32,
+}
+
+impl Default for RayMarchingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            quality: 1.0,
+            step_count: 64,
+            density_multiplier: 1.0,
+        }
+    }
+}
+
 // Resource to store grid settings
 #[derive(Resource)]
 pub struct MarchingGridSettings {
@@ -98,6 +118,7 @@ const CUBE_CORNERS: [Vec3; 8] = [
 pub fn render_free_surface(
     sim_dim: Res<State<SimulationDimension>>,
     mut grid_settings: ResMut<MarchingGridSettings>,
+    raymarching_settings: Res<RayMarchingSettings>,
     particles_3d: Query<&Transform, (With<Particle3D>, Without<Particle>)>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -113,6 +134,15 @@ pub fn render_free_surface(
             }
         }
         SimulationDimension::Dim3 => {
+            // If raymarching is enabled, disable marching cubes
+            if raymarching_settings.enabled {
+                // Remove existing marching cubes mesh
+                for entity in existing_mesh.iter() {
+                    commands.entity(entity).despawn();
+                }
+                return;
+            }
+
             // Check if enough time has passed since last update
             let current_time = time.elapsed_secs();
             if current_time - grid_settings.last_update < grid_settings.update_frequency {
@@ -415,7 +445,7 @@ fn generate_triangles_for_cube(
     }
 }
 
-// Get triangle configuration for a cube (simplified triangle table) fn get_triangles_for_cube(cube_index: u8) -> Vec<i8> { // Simplified triangle patterns for common cube configurations match cube_index { 1 => vec![0, 8, 3], 2 => vec![0, 1, 9], 3 => vec![1, 8, 3, 9, 8, 1], 4 => vec![1, 2, 10], 5 => vec![0, 8, 3, 1, 2, 10], 6 => vec![9, 2, 10, 0, 2, 9], 7 => vec![2, 8, 3, 2, 10, 8, 10, 9, 8], 8 => vec![2, 3, 11], 9 => vec![0, 8, 2, 2, 8, 11], 10 => vec![1, 9, 0, 2, 3, 11], 11 => vec![1, 9, 8, 1, 8, 2, 2, 8, 11], 12 => vec![3, 11, 2, 1, 2, 10], 13 => vec![0, 8, 1, 1, 8, 10, 10, 8, 11, 10, 11, 2], 14 => vec![9, 0, 3, 9, 3, 11, 9, 11, 10, 10, 11, 2], 15 => vec![9, 8, 11, 9, 11, 10, 10, 11, 2], _ => { // For other configurations, create a simple triangle fan if cube_index > 0 && cube_index < 255 { vec![0, 1, 2, 0, 2, 3, 0, 3, 4] // Simple fan pattern } else { vec![] } } } } // Spawn 3D surface mesh from vertices, indices, and normals
+// Spawn 3D surface mesh from vertices, indices, and normals
 fn spawn_3d_surface_mesh(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,

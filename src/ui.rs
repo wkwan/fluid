@@ -5,7 +5,7 @@ use crate::simulation3d::{Fluid3DParams, MouseInteraction3D};
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::simulation::SimulationDimension;
 use crate::simulation::SurfaceDebugSettings;
-use crate::marching::MarchingGridSettings;
+use crate::marching::{MarchingGridSettings, RayMarchingSettings};
 
 pub struct UiPlugin;
 
@@ -30,6 +30,7 @@ fn draw_ui(
     mut reset_ev: EventWriter<crate::simulation::ResetSim>,
     mut surface_debug_settings: ResMut<SurfaceDebugSettings>,
     mut marching_settings: ResMut<MarchingGridSettings>,
+    mut raymarching_settings: ResMut<RayMarchingSettings>,
 ) {
     egui::SidePanel::left("control_panel")
         .resizable(true)
@@ -205,37 +206,64 @@ fn draw_ui(
                     
                     // Marching cubes settings (only show in 3D mode)
                     if *sim_dim.get() == SimulationDimension::Dim3 {
-                        let marching_response = egui::CollapsingHeader::new("Marching Cubes Settings")
+                        // Raymarching toggle
+                        let raymarching_response = egui::CollapsingHeader::new("3D Rendering")
                             .default_open(true)
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label("Grid Resolution:");
-                                    ui.add(egui::Slider::new(&mut marching_settings.grid_resolution, 32..=128).step_by(8.0));
+                                    let mut raymarching_enabled = raymarching_settings.enabled;
+                                    if ui.checkbox(&mut raymarching_enabled, "Enable Ray Marching").changed() {
+                                        raymarching_settings.enabled = raymarching_enabled;
+                                    }
+                                    ui.label("(Q)");
                                 });
                                 
-                                ui.horizontal(|ui| {
-                                    ui.label("ISO Threshold:");
-                                    ui.add(egui::Slider::new(&mut marching_settings.iso_threshold, 0.1..=2.0).step_by(0.1));
-                                });
-                                
-                                ui.horizontal(|ui| {
-                                    ui.label("Update Frequency:");
-                                    ui.add(egui::Slider::new(&mut marching_settings.update_frequency, 0.05..=1.0).step_by(0.05));
-                                    ui.label("sec");
-                                });
-                                
-                                ui.horizontal(|ui| {
-                                    ui.label("Smoothing Radius:");
-                                    ui.add(egui::Slider::new(&mut marching_settings.smoothing_radius, 10.0..=50.0).step_by(1.0));
-                                });
-                                
-                                ui.horizontal(|ui| {
-                                    ui.label("Particle Mass:");
-                                    ui.add(egui::Slider::new(&mut marching_settings.particle_mass, 0.5..=2.0).step_by(0.1));
-                                });
-                                
-                                ui.label("Higher resolution = better quality, lower performance");
-                                ui.label("Lower update frequency = better performance");
+                                if raymarching_settings.enabled {
+                                    ui.colored_label(egui::Color32::LIGHT_BLUE, "Ray marching enabled - volumetric rendering");
+                                    ui.label("Marching cubes disabled");
+                                } else {
+                                    ui.label("Using marching cubes for surface");
+                                }
+                            });
+                        if raymarching_response.header_response.clicked() {
+                            ui.separator();
+                        }
+                        
+                        let marching_response = egui::CollapsingHeader::new("Marching Cubes Settings")
+                            .default_open(!raymarching_settings.enabled)
+                            .show(ui, |ui| {
+                                if raymarching_settings.enabled {
+                                    ui.colored_label(egui::Color32::GRAY, "Disabled when ray marching is active");
+                                } else {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Grid Resolution:");
+                                        ui.add(egui::Slider::new(&mut marching_settings.grid_resolution, 32..=128).step_by(8.0));
+                                    });
+                                    
+                                    ui.horizontal(|ui| {
+                                        ui.label("ISO Threshold:");
+                                        ui.add(egui::Slider::new(&mut marching_settings.iso_threshold, 0.1..=2.0).step_by(0.1));
+                                    });
+                                    
+                                    ui.horizontal(|ui| {
+                                        ui.label("Update Frequency:");
+                                        ui.add(egui::Slider::new(&mut marching_settings.update_frequency, 0.05..=1.0).step_by(0.05));
+                                        ui.label("sec");
+                                    });
+                                    
+                                    ui.horizontal(|ui| {
+                                        ui.label("Smoothing Radius:");
+                                        ui.add(egui::Slider::new(&mut marching_settings.smoothing_radius, 10.0..=50.0).step_by(1.0));
+                                    });
+                                    
+                                    ui.horizontal(|ui| {
+                                        ui.label("Particle Mass:");
+                                        ui.add(egui::Slider::new(&mut marching_settings.particle_mass, 0.5..=2.0).step_by(0.1));
+                                    });
+                                    
+                                    ui.label("Higher resolution = better quality, lower performance");
+                                    ui.label("Lower update frequency = better performance");
+                                }
                             });
                         if marching_response.header_response.clicked() {
                             ui.separator();
