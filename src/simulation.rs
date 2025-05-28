@@ -80,7 +80,6 @@ impl Plugin for SimulationPlugin {
             .init_resource::<FluidParams>()
            .init_resource::<MouseInteraction>()
            .init_resource::<SpatialHashResource>()
-           .init_resource::<DebugUiState>()
            .init_resource::<ColorMapParams>()
            .init_resource::<DrawLakeMode>()
             .init_resource::<Fluid3DParams>()
@@ -140,7 +139,6 @@ impl Plugin for SimulationPlugin {
             .add_systems(Update, handle_ground_deformation.run_if(in_state(SimulationDimension::Dim3)))
            .add_systems(Update, update_particle_colors)
            .add_systems(Update, update_fps_display)
-           .add_systems(Update, handle_debug_ui_toggle)
             .add_systems(Update, track_max_velocity)
             .add_systems(Update, handle_reset_sim)
             // Orbit camera (3D only)
@@ -166,20 +164,6 @@ impl Plugin for SimulationPlugin {
 fn gpu_disabled(gpu_state: Res<GpuState>) -> bool {
     !gpu_state.enabled
 }
-
-// Mark the FPS text for updating
-#[derive(Component)]
-struct FpsText;
-
-// Simple Debug UI State
-#[derive(Resource, Default)]
-struct DebugUiState {
-    visible: bool,
-    settings_text: String,
-}
-
-// Constants - now using shared constants from constants module
-const GRAVITY: Vec2 = Vec2::new(GRAVITY_2D[0], GRAVITY_2D[1]);
 
 // Components
 #[derive(Component)]
@@ -254,15 +238,18 @@ impl Default for SpatialHashResource {
     }
 }
 
-// Marker for settings text
-#[derive(Component)]
-struct SettingsText;
-
 // Cooldown resource to debounce Z dimension toggle
 #[derive(Resource, Default)]
 struct ToggleCooldown {
     timer: Timer,
 }
+
+// Mark the FPS text for updating
+#[derive(Component)]
+struct FpsText;
+
+// Constants - now using shared constants from constants module
+const GRAVITY: Vec2 = Vec2::new(GRAVITY_2D[0], GRAVITY_2D[1]);
 
 // Systems
 fn setup_simulation(mut commands: Commands) {
@@ -272,7 +259,7 @@ fn setup_simulation(mut commands: Commands) {
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(10.0),
-            left: Val::Px(140.0), // Moved right to align with FPS text and avoid overlap with side panel
+            right: Val::Px(20.0),
             ..default()
         },
     ));
@@ -283,25 +270,10 @@ fn setup_simulation(mut commands: Commands) {
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(30.0),
-            left: Val::Px(140.0), // Moved right to avoid overlap with side panel (120px + 20px margin)
+            right: Val::Px(20.0),
             ..default()
         },
         FpsText,
-    ));
-    
-    // Debug settings text (initially hidden)
-    commands.spawn((
-        Text::new(""),
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(10.0),
-            top: Val::Px(10.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            display: Display::None,
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-        SettingsText,
     ));
 }
 
@@ -348,8 +320,7 @@ fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut mouse_interaction: ResMut<MouseInteraction>,
     mut fluid_params: ResMut<FluidParams>,
-    mut debug_ui_state: ResMut<DebugUiState>,
-    gpu_state: Res<GpuState>,
+    mut gpu_state: ResMut<GpuState>,
     mut perf_stats: ResMut<GpuPerformanceStats>,
     mut color_params: ResMut<ColorMapParams>,
     sim_dim: Res<State<SimulationDimension>>,
@@ -401,98 +372,93 @@ fn handle_input(
         perf_stats.base_iterations = (perf_stats.base_iterations + 1).min(8);
     }
     
-    // Parameter adjustment keys - only when debug UI is visible
-    // Using arrow keys and other non-camera keys to avoid WASD conflict
-    if debug_ui_state.visible {
-        // Smoothing radius (Up/Down arrows)
-        if keys.pressed(KeyCode::ArrowUp) {
-            if *sim_dim.get() == SimulationDimension::Dim2 {
-                fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
-            } else {
-                fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius + 0.5).min(100.0);
-            }
-        }
-        if keys.pressed(KeyCode::ArrowDown) {
-            if *sim_dim.get() == SimulationDimension::Dim2 {
-                fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
-            } else {
-                fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(1.0);
-            }
-        }
-        
-        // Pressure multiplier (Left/Right arrows)
-        if keys.pressed(KeyCode::ArrowRight) {
-            if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
-            } else {
-                fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier + 5.0).min(500.0);
-            }
-        }
-        if keys.pressed(KeyCode::ArrowLeft) {
-            if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
-            } else {
-                fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier - 5.0).max(50.0);
-            }
-        }
-        
-        // Surface tension (T/R keys) - only available in 2D mode
+    // Parameter adjustment keys - always available now (no debug UI visibility check)
+    // Smoothing radius (Up/Down arrows)
+    if keys.pressed(KeyCode::ArrowUp) {
         if *sim_dim.get() == SimulationDimension::Dim2 {
-            if keys.pressed(KeyCode::KeyT) {
-                fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier + 1.0).min(100.0);
-            }
-            if keys.pressed(KeyCode::KeyR) {
-                fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier - 1.0).max(5.0);
-            }
+            fluid_params.smoothing_radius = (fluid_params.smoothing_radius + 0.5).min(100.0);
         } else {
-            // Surface tension for 3D mode (T/R keys)
-            if keys.pressed(KeyCode::KeyT) {
-                fluid3d_params.near_pressure_multiplier = (fluid3d_params.near_pressure_multiplier + 0.1).min(10.0);
-            }
-            if keys.pressed(KeyCode::KeyR) {
-                fluid3d_params.near_pressure_multiplier = (fluid3d_params.near_pressure_multiplier - 0.1).max(0.0);
-            }
+            fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius + 0.5).min(100.0);
         }
-        
-        // Collision damping (B/V keys) - only available in 3D mode
-        if *sim_dim.get() == SimulationDimension::Dim3 {
-            if keys.pressed(KeyCode::KeyB) {
-                fluid3d_params.collision_damping = (fluid3d_params.collision_damping + 0.01).min(1.0);
-            }
-            if keys.pressed(KeyCode::KeyV) {
-                fluid3d_params.collision_damping = (fluid3d_params.collision_damping - 0.01).max(0.0);
-            }
-        }
-        
-        // Viscosity (Y/H keys)
-        if keys.pressed(KeyCode::KeyY) {
-            if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
-            } else {
-                fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength + 0.01).min(0.5);
-            }
-        }
-        if keys.pressed(KeyCode::KeyH) {
-            if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
-            } else {
-                fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength - 0.01).max(0.0);
-            }
-        }
-        
-        // Reset to defaults
-        if keys.just_pressed(KeyCode::KeyX) {
-            if *sim_dim.get() == SimulationDimension::Dim2 {
-            *fluid_params = FluidParams::default();
-            } else {
-                *fluid3d_params = Fluid3DParams::default();
-            }
-            *mouse_interaction = MouseInteraction::default();
+    }
+    if keys.pressed(KeyCode::ArrowDown) {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+            fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
+        } else {
+            fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(1.0);
         }
     }
     
-
+    // Pressure multiplier (Left/Right arrows)
+    if keys.pressed(KeyCode::ArrowRight) {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+        fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier + 5.0).min(500.0);
+        } else {
+            fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier + 5.0).min(500.0);
+        }
+    }
+    if keys.pressed(KeyCode::ArrowLeft) {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+        fluid_params.pressure_multiplier = (fluid_params.pressure_multiplier - 5.0).max(50.0);
+        } else {
+            fluid3d_params.pressure_multiplier = (fluid3d_params.pressure_multiplier - 5.0).max(50.0);
+        }
+    }
     
+    // Surface tension (T/R keys) - only available in 2D mode
+    if *sim_dim.get() == SimulationDimension::Dim2 {
+        if keys.pressed(KeyCode::KeyT) {
+            fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier + 1.0).min(100.0);
+        }
+        if keys.pressed(KeyCode::KeyR) {
+            fluid_params.near_pressure_multiplier = (fluid_params.near_pressure_multiplier - 1.0).max(5.0);
+        }
+    } else {
+        // Surface tension for 3D mode (T/R keys)
+        if keys.pressed(KeyCode::KeyT) {
+            fluid3d_params.near_pressure_multiplier = (fluid3d_params.near_pressure_multiplier + 0.1).min(10.0);
+        }
+        if keys.pressed(KeyCode::KeyR) {
+            fluid3d_params.near_pressure_multiplier = (fluid3d_params.near_pressure_multiplier - 0.1).max(0.0);
+        }
+    }
+    
+    // Collision damping (B/V keys) - only available in 3D mode
+    if *sim_dim.get() == SimulationDimension::Dim3 {
+        if keys.pressed(KeyCode::KeyB) {
+            fluid3d_params.collision_damping = (fluid3d_params.collision_damping + 0.01).min(1.0);
+        }
+        if keys.pressed(KeyCode::KeyV) {
+            fluid3d_params.collision_damping = (fluid3d_params.collision_damping - 0.01).max(0.0);
+        }
+    }
+    
+    // Viscosity (Y/H keys)
+    if keys.pressed(KeyCode::KeyY) {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+        fluid_params.viscosity_strength = (fluid_params.viscosity_strength + 0.01).min(0.5);
+        } else {
+            fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength + 0.01).min(0.5);
+        }
+    }
+    if keys.pressed(KeyCode::KeyH) {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+        fluid_params.viscosity_strength = (fluid_params.viscosity_strength - 0.01).max(0.0);
+        } else {
+            fluid3d_params.viscosity_strength = (fluid3d_params.viscosity_strength - 0.01).max(0.0);
+        }
+    }
+    
+    // Reset to defaults
+    if keys.just_pressed(KeyCode::KeyX) {
+        if *sim_dim.get() == SimulationDimension::Dim2 {
+        *fluid_params = FluidParams::default();
+        } else {
+            *fluid3d_params = Fluid3DParams::default();
+        }
+        *mouse_interaction = MouseInteraction::default();
+    }
+
     // tick cooldown
     toggle_cooldown.timer.tick(time.delta());
 
@@ -501,6 +467,12 @@ fn handle_input(
             SimulationDimension::Dim2 => SimulationDimension::Dim3,
             SimulationDimension::Dim3 => SimulationDimension::Dim2,
         };
+
+        // Set GPU accel based on new dimension
+        match new_dim {
+            SimulationDimension::Dim2 => gpu_state.enabled = false,
+            SimulationDimension::Dim3 => gpu_state.enabled = true,
+        }
 
         info!("Starting transition from {:?} to {:?} mode", *sim_dim.get(), new_dim);
         
@@ -512,127 +484,6 @@ fn handle_input(
 
         // Use a longer cooldown (1.0s) to ensure transitions complete safely
         toggle_cooldown.timer = Timer::from_seconds(1.0, TimerMode::Once);
-    }
-    
-    // Update settings text content
-    update_settings_text(&mut debug_ui_state, &fluid_params, &fluid3d_params, &mouse_interaction, &gpu_state, &perf_stats, &color_params, &*sim_dim);
-}
-
-// Helper function to update settings text
-fn update_settings_text(
-    debug_ui_state: &mut DebugUiState, 
-    fluid_params: &FluidParams,
-    fluid3d_params: &Fluid3DParams,
-    mouse_interaction: &MouseInteraction,
-    gpu_state: &GpuState,
-    perf_stats: &GpuPerformanceStats,
-    color_params: &ColorMapParams,
-    sim_dim: &State<SimulationDimension>,
-) {
-    let surface_tension_text = if *sim_dim.get() == SimulationDimension::Dim2 {
-        format!("[T/R] Surface Tension: {:.1}\n", fluid_params.near_pressure_multiplier)
-    } else {
-        format!("[T/R] Surface Tension: {:.2}\n", fluid3d_params.near_pressure_multiplier)
-    };
-
-    let collision_damping_text = if *sim_dim.get() == SimulationDimension::Dim3 {
-        format!("[B/V] Collision Damping: {:.2}\n", fluid3d_params.collision_damping)
-    } else {
-        String::new()
-    };
-
-    debug_ui_state.settings_text = format!(
-        "Simulation Parameters (F1 to hide)\n\n\
-        [Up/Down] Smoothing Radius: {:.1}\n\
-        [Left/Right] Pressure Multiplier: {:.1}\n\
-        {}\
-        {}\
-        [Y/H] Viscosity: {:.3}\n\n\
-        Target Density: {:.1}\n\
-        Mouse Force: {:.1}\n\
-        Mouse Radius: {:.1}\n\n\
-        [G] GPU Acceleration: {}\n\
-        Avg Frame Time: {:.2} ms\n\
-        [I] Adaptive Iterations: {}\n\
-        [U/O] Iterations: {}/{}\n\
-        Max Velocity: {:.1}\n\
-        \n\
-        [C] Color by Velocity: {}\n\
-        [M/N] Min Speed: {:.1}\n\
-        [K/J] Max Speed: {:.1}\n\
-        {}\n\n\
-        [Z] Toggle Dimension (current: {})
-        {}\n\
-        [X] Reset to Defaults",
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.smoothing_radius
-        } else {
-            fluid3d_params.smoothing_radius
-        },
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.pressure_multiplier
-        } else {
-            fluid3d_params.pressure_multiplier
-        },
-        surface_tension_text,
-        collision_damping_text,
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.viscosity_strength
-        } else {
-            fluid3d_params.viscosity_strength
-        },
-        if *sim_dim.get() == SimulationDimension::Dim2 {
-            fluid_params.target_density
-        } else {
-            fluid3d_params.target_density
-        },
-        mouse_interaction.strength,
-        mouse_interaction.radius,
-        if gpu_state.enabled { "Enabled" } else { "Disabled (CPU)" },
-        perf_stats.avg_frame_time,
-        if perf_stats.adaptive_iterations { "On" } else { "Off" },
-        perf_stats.iterations_per_frame, 
-        perf_stats.base_iterations,
-        perf_stats.max_velocity,
-        if color_params.use_velocity_color { "Yes" } else { "No" },
-        color_params.min_speed,
-        color_params.max_speed,
-        if let Some(err) = &gpu_state.last_error {
-            format!("GPU Error: {}", err)
-        } else {
-            String::new()
-        },
-        if *sim_dim.get() == SimulationDimension::Dim2 { "2D" } else { "3D" },
-        if *sim_dim.get() == SimulationDimension::Dim3 { "\n[Space] Spawn Duck" } else { "" }
-    );
-}
-
-// Toggle debug UI visibility
-fn handle_debug_ui_toggle(
-    mut debug_ui_state: ResMut<DebugUiState>,
-    mut query: Query<(&mut Node, &mut Text), With<SettingsText>>,
-    buttons: Res<ButtonInput<KeyCode>>,
-) {
-    if buttons.just_pressed(KeyCode::F1) {
-        debug_ui_state.visible = !debug_ui_state.visible;
-        
-        if let Ok((mut node, mut text)) = query.single_mut() {
-            node.display = if debug_ui_state.visible {
-                Display::Flex
-            } else {
-                Display::None
-            };
-            
-            if debug_ui_state.visible {
-                // Update text content when showing
-                *text = Text::new(debug_ui_state.settings_text.clone());
-            }
-        }
-    } else if debug_ui_state.visible {
-        // Update text content even when not toggling visibility
-        if let Ok((_, mut text)) = query.single_mut() {
-            *text = Text::new(debug_ui_state.settings_text.clone());
-        }
     }
 }
 
