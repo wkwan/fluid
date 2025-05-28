@@ -95,7 +95,7 @@ pub struct Fluid3DParams {
 impl Default for Fluid3DParams {
     fn default() -> Self {
         Self {
-            smoothing_radius: 3.0,          // Reduced for tighter particle interactions
+            smoothing_radius: 1.0,          // Default to 1.0 for tighter interactions
             target_density: 40.0,          // Increased from 30.0 for stronger density
             pressure_multiplier: 120.0,    // Increased from 100.0 for better cohesion
             near_pressure_multiplier: 60.0, // Increased from 50.0 for better surface tension

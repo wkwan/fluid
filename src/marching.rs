@@ -31,12 +31,12 @@ pub struct MarchingGridSettings {
 impl Default for MarchingGridSettings {
     fn default() -> Self {
         Self {
-            grid_resolution: 40,  // Slightly higher for better quality
-            iso_threshold: 0.3,   // Higher threshold to capture more of the fluid volume
+            grid_resolution: 64,  // Higher resolution for smoother surface
+            iso_threshold: 0.15,  // Lower threshold for smoother surface
             grid_bounds_min: Vec3::new(-150.0, -350.0, -150.0),  // Cover entire simulation space
             grid_bounds_max: Vec3::new(150.0, 200.0, 150.0),
-            smoothing_radius: 25.0,  // Balanced radius for good coverage
-            particle_mass: 2.0,      // Balanced mass for stable density field
+            smoothing_radius: 35.0,  // Larger radius for smoother density field
+            particle_mass: 3.5,      // Higher mass for stronger density field
             update_frequency: 0.15,  // Reasonable update rate
             last_update: 0.0,
         }
@@ -172,7 +172,7 @@ pub fn render_free_surface(
 }
 
 // Simplified density kernel function for better surface detection
-fn simple_density_kernel(distance: f32, smoothing_radius: f32) -> f32 {
+fn poly6_kernel(distance: f32, smoothing_radius: f32) -> f32 {
     if distance >= smoothing_radius {
         return 0.0;
     }
@@ -216,7 +216,7 @@ fn generate_density_field(
                 let mut density = 0.0;
                 for &particle_pos in &particle_positions {
                     let distance = (grid_pos - particle_pos).length();
-                    let kernel_value = simple_density_kernel(distance, grid_settings.smoothing_radius);
+                    let kernel_value = poly6_kernel(distance, grid_settings.smoothing_radius);
                     density += grid_settings.particle_mass * kernel_value;
                 }
                 
@@ -415,7 +415,7 @@ fn generate_triangles_for_cube(
     }
 }
 
-// Spawn 3D surface mesh from vertices, indices, and normals
+// Get triangle configuration for a cube (simplified triangle table) fn get_triangles_for_cube(cube_index: u8) -> Vec<i8> { // Simplified triangle patterns for common cube configurations match cube_index { 1 => vec![0, 8, 3], 2 => vec![0, 1, 9], 3 => vec![1, 8, 3, 9, 8, 1], 4 => vec![1, 2, 10], 5 => vec![0, 8, 3, 1, 2, 10], 6 => vec![9, 2, 10, 0, 2, 9], 7 => vec![2, 8, 3, 2, 10, 8, 10, 9, 8], 8 => vec![2, 3, 11], 9 => vec![0, 8, 2, 2, 8, 11], 10 => vec![1, 9, 0, 2, 3, 11], 11 => vec![1, 9, 8, 1, 8, 2, 2, 8, 11], 12 => vec![3, 11, 2, 1, 2, 10], 13 => vec![0, 8, 1, 1, 8, 10, 10, 8, 11, 10, 11, 2], 14 => vec![9, 0, 3, 9, 3, 11, 9, 11, 10, 10, 11, 2], 15 => vec![9, 8, 11, 9, 11, 10, 10, 11, 2], _ => { // For other configurations, create a simple triangle fan if cube_index > 0 && cube_index < 255 { vec![0, 1, 2, 0, 2, 3, 0, 3, 4] // Simple fan pattern } else { vec![] } } } } // Spawn 3D surface mesh from vertices, indices, and normals
 fn spawn_3d_surface_mesh(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
@@ -443,11 +443,11 @@ fn spawn_3d_surface_mesh(
     commands.spawn((
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.2, 0.8, 1.0, 0.9),  // More opaque and brighter
+            base_color: Color::srgba(0.3, 0.7, 1.0, 0.95),  // Slightly more opaque
             alpha_mode: AlphaMode::Blend,
             cull_mode: None,
             metallic: 0.0,
-            perceptual_roughness: 0.5,
+            perceptual_roughness: 0.3,
             emissive: LinearRgba::rgb(0.1, 0.2, 0.3),  // Add some glow
             ..default()
         })),
