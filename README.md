@@ -11,5 +11,3 @@ Streaming development on https://twitch.tv/willkwan
 ```
 cargo run --release
 ```
-
-Press F1 to toggle simulation parameters.
