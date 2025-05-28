@@ -68,7 +68,7 @@ impl Default for MouseInteraction3D {
             position: Vec3::ZERO,
             active: false,
             repel: false,
-            strength: 10000.0,  // Increased from 1000.0
+            strength: 2000.0,  // Reduced from 10000.0 for gentler interaction
             radius: 150.0,     // Increased from 50.0
         }
     }
@@ -95,7 +95,7 @@ pub struct Fluid3DParams {
 impl Default for Fluid3DParams {
     fn default() -> Self {
         Self {
-            smoothing_radius: 7.0,          // Reduced from 10.0 for more localized interactions
+            smoothing_radius: 3.0,          // Default to 3.0 for tighter interactions
             target_density: 30.0,          // Same as 2D working value  
             pressure_multiplier: 100.0,    // Same as 2D working value
             near_pressure_multiplier: 50.0, // Same as 2D working value
@@ -653,6 +653,7 @@ pub fn integrate_positions_3d(
     mut particles: Query<(&mut Transform, &mut Particle3D)>,
     params: Res<Fluid3DParams>,
     spatial_hash: Res<SpatialHashResource3D>,
+    ground_query: Query<(&DeformableGround, &Transform), (With<GroundPlane>, Without<Particle3D>)>,
     sim_dim: Res<State<SimulationDimension>>,
 ) {
     if sim_dim.get() != &SimulationDimension::Dim3 {
@@ -667,6 +668,9 @@ pub fn integrate_positions_3d(
     for (transform, _) in particles.iter() {
         positions.push(transform.translation);
     }
+    
+    // Get ground data for collision detection
+    let ground_data = ground_query.single().ok();
     
     for (mut transform, mut particle) in particles.iter_mut() {
         transform.translation += particle.velocity * dt;
@@ -684,11 +688,8 @@ pub fn integrate_positions_3d(
             vel.x = -vel.x * collision_damping;
         }
 
-        // Y-axis
-        if pos.y < BOUNDARY_MIN.y + PARTICLE_RADIUS {
-            pos.y = BOUNDARY_MIN.y + PARTICLE_RADIUS;
-            vel.y = -vel.y * collision_damping;
-        } else if pos.y > BOUNDARY_MAX.y - PARTICLE_RADIUS {
+        // Y-axis (top boundary only, ground collision handled separately)
+        if pos.y > BOUNDARY_MAX.y - PARTICLE_RADIUS {
             pos.y = BOUNDARY_MAX.y - PARTICLE_RADIUS;
             vel.y = -vel.y * collision_damping;
         }
@@ -700,6 +701,27 @@ pub fn integrate_positions_3d(
         } else if pos.z > BOUNDARY_MAX.z - PARTICLE_RADIUS {
             pos.z = BOUNDARY_MAX.z - PARTICLE_RADIUS;
             vel.z = -vel.z * collision_damping;
+        }
+
+        // Ground collision detection with deformed terrain
+        if let Some((deformable_ground, ground_transform)) = ground_data {
+            let ground_height = sample_ground_height_at_position(
+                pos.x, pos.z, deformable_ground, ground_transform
+            );
+            
+            if pos.y < ground_height + PARTICLE_RADIUS {
+                pos.y = ground_height + PARTICLE_RADIUS;
+                vel.y = -vel.y * collision_damping;
+                // Add some horizontal friction when hitting the ground
+                vel.x *= 0.9;
+                vel.z *= 0.9;
+            }
+        } else {
+            // Fallback to flat ground collision if no deformable ground exists
+            if pos.y < BOUNDARY_MIN.y + PARTICLE_RADIUS {
+                pos.y = BOUNDARY_MIN.y + PARTICLE_RADIUS;
+                vel.y = -vel.y * collision_damping;
+            }
         }
 
         // Handle particle-to-particle collisions
@@ -1251,7 +1273,7 @@ impl Default for GroundDeformationTimer {
     }
 }
 
-// System to handle ground deformation when Draw Lake mode is active
+// System to handle ground deformation when terrain doodling mode is active
 pub fn handle_ground_deformation(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
@@ -1270,15 +1292,22 @@ pub fn handle_ground_deformation(
     // Update the deformation timer
     deformation_timer.timer.tick(time.delta());
     
-    // Deform on left mouse click or when left mouse button is held down
-    if !mouse_buttons.pressed(MouseButton::Left) {
+    // Check for either left or right mouse button
+    let left_pressed = mouse_buttons.pressed(MouseButton::Left);
+    let right_pressed = mouse_buttons.pressed(MouseButton::Right);
+    
+    if !left_pressed && !right_pressed {
         // Reset timer when mouse is released so next click is immediate
         deformation_timer.timer.reset();
         return;
     }
     
+    // Determine deformation direction: left = emboss (down), right = extrude (up)
+    let deform_up = right_pressed;
+    
     // For initial click, deform immediately. For held clicks, use timer to throttle
     let should_deform = mouse_buttons.just_pressed(MouseButton::Left) || 
+                       mouse_buttons.just_pressed(MouseButton::Right) ||
                        deformation_timer.timer.finished();
     
     if !should_deform {
@@ -1286,7 +1315,8 @@ pub fn handle_ground_deformation(
     }
     
     // Reset timer for next deformation when holding
-    if mouse_buttons.pressed(MouseButton::Left) && !mouse_buttons.just_pressed(MouseButton::Left) {
+    if (left_pressed && !mouse_buttons.just_pressed(MouseButton::Left)) ||
+       (right_pressed && !mouse_buttons.just_pressed(MouseButton::Right)) {
         deformation_timer.timer.reset();
     }
     
@@ -1310,6 +1340,7 @@ pub fn handle_ground_deformation(
                                     mesh_handle,
                                     intersection_point,
                                     ground_transform,
+                                    deform_up,
                                 );
                             }
                         }
@@ -1327,6 +1358,7 @@ fn deform_ground_at_point(
     mesh_handle: &Mesh3d,
     world_point: Vec3,
     ground_transform: &Transform,
+    deform_up: bool,
 ) {
     let deformation_radius = 12.5; // Reduced from 50.0 to quarter size
     let deformation_depth = 5.0;   // Reduced from 20.0 to quarter size
@@ -1343,8 +1375,12 @@ fn deform_ground_at_point(
             let falloff = 1.0 - (distance / deformation_radius);
             let falloff_smooth = falloff * falloff * (3.0 - 2.0 * falloff); // Smoothstep
             
-            // Deform downward
-            vertex.y -= deformation_depth * falloff_smooth;
+            // Deform up or down based on mouse button
+            if deform_up {
+                vertex.y += deformation_depth * falloff_smooth; // Right-click: extrude upward
+            } else {
+                vertex.y -= deformation_depth * falloff_smooth; // Left-click: emboss downward
+            }
         }
     }
     
@@ -1388,6 +1424,77 @@ fn recalculate_normals(mesh: &mut Mesh, vertices: &[Vec3], indices: &[u32]) {
     
     let normal_array: Vec<[f32; 3]> = normals.iter().map(|n| [n.x, n.y, n.z]).collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normal_array);
+}
+
+// Function to sample the ground height at a given world XZ position
+fn sample_ground_height_at_position(
+    world_x: f32,
+    world_z: f32,
+    deformable_ground: &DeformableGround,
+    ground_transform: &Transform,
+) -> f32 {
+    // Convert world position to local ground coordinates
+    let world_pos = Vec3::new(world_x, 0.0, world_z);
+    let local_pos = ground_transform.compute_matrix().inverse().transform_point3(world_pos);
+    
+    let half_size = deformable_ground.size * 0.5;
+    
+    // Check if position is outside the ground mesh bounds
+    if local_pos.x < -half_size || local_pos.x > half_size || 
+       local_pos.z < -half_size || local_pos.z > half_size {
+        // Return the base ground level if outside bounds
+        return ground_transform.translation.y;
+    }
+    
+    // Convert local position to grid coordinates
+    let u = (local_pos.x + half_size) / deformable_ground.size;
+    let v = (local_pos.z + half_size) / deformable_ground.size;
+    
+    // Clamp to valid range
+    let u = u.clamp(0.0, 1.0);
+    let v = v.clamp(0.0, 1.0);
+    
+    // Convert to vertex indices
+    let grid_x = u * deformable_ground.width_segments as f32;
+    let grid_z = v * deformable_ground.height_segments as f32;
+    
+    // Get the four surrounding vertices for bilinear interpolation
+    let x0 = grid_x.floor() as u32;
+    let x1 = (x0 + 1).min(deformable_ground.width_segments);
+    let z0 = grid_z.floor() as u32;
+    let z1 = (z0 + 1).min(deformable_ground.height_segments);
+    
+    // Calculate interpolation weights
+    let fx = grid_x - x0 as f32;
+    let fz = grid_z - z0 as f32;
+    
+    // Get vertex indices in the vertex array
+    let idx00 = (z0 * (deformable_ground.width_segments + 1) + x0) as usize;
+    let idx10 = (z0 * (deformable_ground.width_segments + 1) + x1) as usize;
+    let idx01 = (z1 * (deformable_ground.width_segments + 1) + x0) as usize;
+    let idx11 = (z1 * (deformable_ground.width_segments + 1) + x1) as usize;
+    
+    // Ensure indices are within bounds
+    if idx00 >= deformable_ground.vertices.len() || 
+       idx10 >= deformable_ground.vertices.len() || 
+       idx01 >= deformable_ground.vertices.len() || 
+       idx11 >= deformable_ground.vertices.len() {
+        return ground_transform.translation.y;
+    }
+    
+    // Get the heights at the four corners
+    let h00 = deformable_ground.vertices[idx00].y;
+    let h10 = deformable_ground.vertices[idx10].y;
+    let h01 = deformable_ground.vertices[idx01].y;
+    let h11 = deformable_ground.vertices[idx11].y;
+    
+    // Bilinear interpolation
+    let h0 = h00 * (1.0 - fx) + h10 * fx;
+    let h1 = h01 * (1.0 - fx) + h11 * fx;
+    let interpolated_height = h0 * (1.0 - fz) + h1 * fz;
+    
+    // Transform back to world space
+    ground_transform.translation.y + interpolated_height
 }
 
 fn create_boundary_wireframe(

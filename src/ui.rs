@@ -24,9 +24,9 @@ fn draw_ui(
                 
                 // Create toggle button with different appearance based on state
                 let button_text = if draw_lake_mode.enabled {
-                    "🌊 Draw Lake (ON)"
+                    "🌊 Terrain doodling (ON)"
                 } else {
-                    "Draw Lake (OFF)"
+                    "Terrain doodling (OFF)"
                 };
                 
                 let button = if draw_lake_mode.enabled {

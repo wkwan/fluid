@@ -416,7 +416,7 @@ fn handle_input(
             if *sim_dim.get() == SimulationDimension::Dim2 {
                 fluid_params.smoothing_radius = (fluid_params.smoothing_radius - 0.5).max(5.0);
             } else {
-                fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(5.0);
+                fluid3d_params.smoothing_radius = (fluid3d_params.smoothing_radius - 0.5).max(1.0);
             }
         }
         
