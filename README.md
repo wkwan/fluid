@@ -7,9 +7,9 @@ Fluid simulation is done with a particle-based approach called Smoothed Particle
 
 3D fluid rendering can be toggled between 3 separate pipelines. Development focus is on screen space rendering to balance realism with performance, but raymarching (most realistic) and marching cubes (fastest) are both implemented.
 
-Kanban board: https://github.com/users/wkwan/projects/2
+### Kanban board: https://github.com/users/wkwan/projects/2
 
-Streaming development on https://twitch.tv/willkwan
+### Streaming development on https://twitch.tv/willkwan
 
 # To run demo:
 ```
