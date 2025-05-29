@@ -85,7 +85,6 @@ impl Plugin for SimulationPlugin {
            .init_resource::<ColorMapParams>()
            .init_resource::<DrawLakeMode>()
            .init_resource::<MarchingGridSettings>()
-           .init_resource::<SurfaceDebugSettings>()
             .init_resource::<Fluid3DParams>()
             .init_resource::<SpawnRegion3D>()
             .init_resource::<SpatialHashResource3D>()
@@ -260,20 +259,6 @@ struct FpsText;
 
 // Constants - now using shared constants from constants module
 const GRAVITY: Vec2 = Vec2::new(GRAVITY_2D[0], GRAVITY_2D[1]);
-
-// Resource for surface debug settings (moved from ui module for accessibility)
-#[derive(Resource)]
-pub struct SurfaceDebugSettings {
-    pub show_surface: bool,
-}
-
-impl Default for SurfaceDebugSettings {
-    fn default() -> Self {
-        Self {
-            show_surface: true,
-        }
-    }
-}
 
 // Systems
 fn setup_simulation(mut commands: Commands) {
@@ -1248,7 +1233,7 @@ fn update_spatial_hash_on_radius_change_3d(
 
 // Wrapper system to pass UI settings to marching system
 fn render_free_surface_wrapper(
-    surface_debug_settings: Res<SurfaceDebugSettings>,
+    fluid_render_settings: Res<crate::marching::FluidRenderSettings>,
     sim_dim: Res<State<SimulationDimension>>,
     grid_settings: ResMut<MarchingGridSettings>,
     raymarching_settings: Res<crate::marching::RayMarchingSettings>,
@@ -1260,23 +1245,13 @@ fn render_free_surface_wrapper(
     mut images: ResMut<Assets<Image>>,
     existing_mesh: Query<Entity, With<crate::marching::FreeSurfaceMesh>>,
     existing_volume: Query<Entity, With<crate::marching::RayMarchVolume>>,
+    existing_screen_space: Query<Entity, With<crate::screen_space_fluid::ScreenSpaceFluid>>,
     time: Res<Time>,
 ) {
-    // Check if surface rendering is enabled
-    if !surface_debug_settings.show_surface {
-        // Remove existing mesh and volume if surface rendering is disabled
-        for entity in existing_mesh.iter() {
-            commands.entity(entity).despawn();
-        }
-        for entity in existing_volume.iter() {
-            commands.entity(entity).despawn();
-        }
-        return;
-    }
-
     // Call the actual rendering function
     crate::marching::render_free_surface(
         sim_dim,
+        fluid_render_settings,
         grid_settings,
         raymarching_settings,
         particles_3d,
@@ -1287,6 +1262,7 @@ fn render_free_surface_wrapper(
         images,
         existing_mesh,
         existing_volume,
+        existing_screen_space,
         time,
     );
 }

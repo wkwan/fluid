@@ -4,8 +4,7 @@ use crate::simulation::{DrawLakeMode, FluidParams, MouseInteraction, ColorMapPar
 use crate::simulation3d::{Fluid3DParams, MouseInteraction3D};
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::simulation::SimulationDimension;
-use crate::simulation::SurfaceDebugSettings;
-use crate::marching::{MarchingGridSettings, RayMarchingSettings};
+use crate::marching::{MarchingGridSettings, RayMarchingSettings, FluidRenderSettings, FluidRenderMode};
 
 pub struct UiPlugin;
 
@@ -28,9 +27,9 @@ fn draw_ui(
     sim_dim: Res<State<SimulationDimension>>,
     mut next_sim_dim: ResMut<NextState<SimulationDimension>>,
     mut reset_ev: EventWriter<crate::simulation::ResetSim>,
-    mut surface_debug_settings: ResMut<SurfaceDebugSettings>,
     mut marching_settings: ResMut<MarchingGridSettings>,
     mut raymarching_settings: ResMut<RayMarchingSettings>,
+    mut fluid_render_settings: ResMut<FluidRenderSettings>,
 ) {
     egui::SidePanel::left("control_panel")
         .resizable(true)
@@ -198,145 +197,174 @@ fn draw_ui(
                         ui.separator();
                     }
                     
-                    // Surface debug toggle
-                    let mut show_surface = surface_debug_settings.show_surface;
-                    if ui.checkbox(&mut show_surface, "Show Free Surface").changed() {
-                        surface_debug_settings.show_surface = show_surface;
-                    }
-                    
-                    // Marching cubes settings (only show in 3D mode)
+                    // Fluid Rendering Controls (only show in 3D mode)
                     if *sim_dim.get() == SimulationDimension::Dim3 {
-                        // Raymarching toggle
-                        let _raymarching_response = egui::CollapsingHeader::new("3D Rendering")
+                        let _rendering_response = egui::CollapsingHeader::new("Fluid Rendering")
                             .default_open(true)
                             .show(ui, |ui| {
-                                ui.checkbox(&mut raymarching_settings.enabled, "Enable Ray Marching (Q)");
+                                // Show Free Surface toggle
+                                ui.checkbox(&mut fluid_render_settings.show_free_surface, "Show Free Surface");
                                 
-                                if raymarching_settings.enabled {
+                                if fluid_render_settings.show_free_surface {
                                     ui.separator();
                                     
-                                    // Quality settings
-                                    ui.label("Ray Marching Quality:");
-                                    ui.add(egui::Slider::new(&mut raymarching_settings.step_count, 8..=128)
-                                        .text("Step Count"));
-                                    
-                                    ui.add(egui::Slider::new(&mut raymarching_settings.density_multiplier, 0.1..=20.0)
-                                        .text("Density Multiplier"));
-                                    
-                                    ui.add(egui::Slider::new(&mut raymarching_settings.density_threshold, 0.00001..=0.1)
-                                        .text("Density Threshold")
-                                        .logarithmic(true));
+                                    // Rendering mode selection
+                                    ui.label("Rendering Method:");
+                                    ui.horizontal(|ui| {
+                                        if ui.selectable_label(
+                                            fluid_render_settings.render_mode == FluidRenderMode::ScreenSpace, 
+                                            "Screen Space"
+                                        ).clicked() {
+                                            fluid_render_settings.render_mode = FluidRenderMode::ScreenSpace;
+                                        }
+                                        
+                                        if ui.selectable_label(
+                                            fluid_render_settings.render_mode == FluidRenderMode::RayMarching, 
+                                            "Ray Marching"
+                                        ).clicked() {
+                                            fluid_render_settings.render_mode = FluidRenderMode::RayMarching;
+                                        }
+                                        
+                                        if ui.selectable_label(
+                                            fluid_render_settings.render_mode == FluidRenderMode::MarchingCubes, 
+                                            "Marching Cubes"
+                                        ).clicked() {
+                                            fluid_render_settings.render_mode = FluidRenderMode::MarchingCubes;
+                                        }
+                                    });
                                     
                                     ui.separator();
                                     
-                                    // Advanced features
-                                    ui.label("Advanced Features:");
-                                    ui.checkbox(&mut raymarching_settings.refraction_enabled, "Enable Refraction");
-                                    ui.checkbox(&mut raymarching_settings.reflection_enabled, "Enable Reflection");
-                                    ui.checkbox(&mut raymarching_settings.environment_sampling, "Environment Sampling");
-                                    
-                                    if raymarching_settings.refraction_enabled || raymarching_settings.reflection_enabled {
-                                        ui.add(egui::Slider::new(&mut raymarching_settings.max_bounces, 1..=8)
-                                            .text("Max Bounces"));
-                                        
-                                        ui.add(egui::Slider::new(&mut raymarching_settings.ior_water, 1.0..=2.0)
-                                            .text("Water IOR"));
-                                        
-                                        ui.add(egui::Slider::new(&mut raymarching_settings.surface_smoothness, 0.0..=1.0)
-                                            .text("Surface Smoothness"));
+                                    // Show settings based on selected mode
+                                    match fluid_render_settings.render_mode {
+                                        FluidRenderMode::ScreenSpace => {
+                                            ui.label("Screen Space Rendering");
+                                            ui.colored_label(egui::Color32::YELLOW, "Coming soon - placeholder active");
+                                        }
+                                        FluidRenderMode::RayMarching => {
+                                            // Ray marching settings
+                                            ui.label("Ray Marching Settings:");
+                                            
+                                            // Quality settings
+                                            ui.add(egui::Slider::new(&mut raymarching_settings.step_count, 8..=128)
+                                                .text("Step Count"));
+                                            
+                                            ui.add(egui::Slider::new(&mut raymarching_settings.density_multiplier, 0.1..=20.0)
+                                                .text("Density Multiplier"));
+                                            
+                                            ui.add(egui::Slider::new(&mut raymarching_settings.density_threshold, 0.00001..=0.1)
+                                                .text("Density Threshold")
+                                                .logarithmic(true));
+                                            
+                                            ui.separator();
+                                            
+                                            // Advanced features
+                                            ui.label("Advanced Features:");
+                                            ui.checkbox(&mut raymarching_settings.refraction_enabled, "Enable Refraction");
+                                            ui.checkbox(&mut raymarching_settings.reflection_enabled, "Enable Reflection");
+                                            ui.checkbox(&mut raymarching_settings.environment_sampling, "Environment Sampling");
+                                            
+                                            if raymarching_settings.refraction_enabled || raymarching_settings.reflection_enabled {
+                                                ui.add(egui::Slider::new(&mut raymarching_settings.max_bounces, 1..=8)
+                                                    .text("Max Bounces"));
+                                                
+                                                ui.add(egui::Slider::new(&mut raymarching_settings.ior_water, 1.0..=2.0)
+                                                    .text("Water IOR"));
+                                                
+                                                ui.add(egui::Slider::new(&mut raymarching_settings.surface_smoothness, 0.0..=1.0)
+                                                    .text("Surface Smoothness"));
+                                            }
+                                            
+                                            ui.separator();
+                                            
+                                            // Lighting & Appearance
+                                            ui.label("Lighting & Appearance:");
+                                            ui.add(egui::Slider::new(&mut raymarching_settings.light_intensity, 0.1..=10.0)
+                                                .text("Light Intensity"));
+                                            
+                                            ui.add(egui::Slider::new(&mut raymarching_settings.absorption, 0.1..=10.0)
+                                                .text("Absorption"));
+                                            
+                                            ui.add(egui::Slider::new(&mut raymarching_settings.scattering, 0.0..=2.0)
+                                                .text("Scattering"));
+                                            
+                                            // Extinction coefficient for water-like absorption
+                                            ui.label("Water Absorption (RGB):");
+                                            ui.horizontal(|ui| {
+                                                ui.add(egui::DragValue::new(&mut raymarching_settings.extinction_coefficient.x)
+                                                    .speed(0.01)
+                                                    .range(0.0..=1.0)
+                                                    .prefix("R: "));
+                                                ui.add(egui::DragValue::new(&mut raymarching_settings.extinction_coefficient.y)
+                                                    .speed(0.01)
+                                                    .range(0.0..=1.0)
+                                                    .prefix("G: "));
+                                                ui.add(egui::DragValue::new(&mut raymarching_settings.extinction_coefficient.z)
+                                                    .speed(0.01)
+                                                    .range(0.0..=1.0)
+                                                    .prefix("B: "));
+                                            });
+                                            
+                                            ui.separator();
+                                            
+                                            // Presets
+                                            ui.label("Presets:");
+                                            ui.horizontal(|ui| {
+                                                if ui.button("Simple Volume").clicked() {
+                                                    raymarching_settings.refraction_enabled = false;
+                                                    raymarching_settings.reflection_enabled = false;
+                                                    raymarching_settings.environment_sampling = false;
+                                                    raymarching_settings.density_multiplier = 10.0;
+                                                    raymarching_settings.absorption = 5.0;
+                                                }
+                                                
+                                                if ui.button("Realistic Water").clicked() {
+                                                    raymarching_settings.refraction_enabled = true;
+                                                    raymarching_settings.reflection_enabled = true;
+                                                    raymarching_settings.environment_sampling = true;
+                                                    raymarching_settings.max_bounces = 3;
+                                                    raymarching_settings.ior_water = 1.33;
+                                                    raymarching_settings.extinction_coefficient = Vec3::new(0.45, 0.15, 0.1);
+                                                    raymarching_settings.density_multiplier = 1.5;
+                                                    raymarching_settings.density_threshold = 0.001;
+                                                    raymarching_settings.absorption = 0.8;
+                                                    raymarching_settings.surface_smoothness = 0.8;
+                                                }
+                                                
+                                                if ui.button("Glass-like").clicked() {
+                                                    raymarching_settings.refraction_enabled = true;
+                                                    raymarching_settings.reflection_enabled = true;
+                                                    raymarching_settings.environment_sampling = true;
+                                                    raymarching_settings.max_bounces = 4;
+                                                    raymarching_settings.ior_water = 1.5;
+                                                    raymarching_settings.extinction_coefficient = Vec3::new(0.01, 0.01, 0.01);
+                                                    raymarching_settings.density_multiplier = 1.0;
+                                                    raymarching_settings.absorption = 0.5;
+                                                }
+                                            });
+                                        }
+                                        FluidRenderMode::MarchingCubes => {
+                                            // Marching cubes settings
+                                            ui.label("Marching Cubes Settings:");
+                                            
+                                            ui.horizontal(|ui| {
+                                                ui.label("Grid Resolution:");
+                                                ui.add(egui::Slider::new(&mut marching_settings.grid_resolution, 32..=128).step_by(8.0));
+                                            });
+                                            
+                                            ui.horizontal(|ui| {
+                                                ui.label("ISO Threshold:");
+                                                ui.add(egui::Slider::new(&mut marching_settings.iso_threshold, 0.1..=2.0).step_by(0.1));
+                                            });
+                                            
+                                            ui.horizontal(|ui| {
+                                                ui.label("Update Frequency:");
+                                                ui.add(egui::Slider::new(&mut marching_settings.update_frequency, 0.05..=1.0).step_by(0.05));
+                                            });
+                                        }
                                     }
-                                    
-                                    ui.separator();
-                                    
-                                    // Lighting & Appearance
-                                    ui.label("Lighting & Appearance:");
-                                    ui.add(egui::Slider::new(&mut raymarching_settings.light_intensity, 0.1..=10.0)
-                                        .text("Light Intensity"));
-                                    
-                                    ui.add(egui::Slider::new(&mut raymarching_settings.absorption, 0.1..=10.0)
-                                        .text("Absorption"));
-                                    
-                                    ui.add(egui::Slider::new(&mut raymarching_settings.scattering, 0.0..=2.0)
-                                        .text("Scattering"));
-                                    
-                                    // Extinction coefficient for water-like absorption
-                                    ui.label("Water Absorption (RGB):");
-                                    ui.horizontal(|ui| {
-                                        ui.add(egui::DragValue::new(&mut raymarching_settings.extinction_coefficient.x)
-                                            .speed(0.01)
-                                            .range(0.0..=1.0)
-                                            .prefix("R: "));
-                                        ui.add(egui::DragValue::new(&mut raymarching_settings.extinction_coefficient.y)
-                                            .speed(0.01)
-                                            .range(0.0..=1.0)
-                                            .prefix("G: "));
-                                        ui.add(egui::DragValue::new(&mut raymarching_settings.extinction_coefficient.z)
-                                            .speed(0.01)
-                                            .range(0.0..=1.0)
-                                            .prefix("B: "));
-                                    });
-                                    
-                                    ui.separator();
-                                    
-                                    // Presets
-                                    ui.label("Presets:");
-                                    ui.horizontal(|ui| {
-                                        if ui.button("Simple Volume").clicked() {
-                                            raymarching_settings.refraction_enabled = false;
-                                            raymarching_settings.reflection_enabled = false;
-                                            raymarching_settings.environment_sampling = false;
-                                            raymarching_settings.density_multiplier = 10.0;
-                                            raymarching_settings.absorption = 5.0;
-                                        }
-                                        
-                                        if ui.button("Realistic Water").clicked() {
-                                            raymarching_settings.refraction_enabled = true;
-                                            raymarching_settings.reflection_enabled = true;
-                                            raymarching_settings.environment_sampling = true;
-                                            raymarching_settings.max_bounces = 3;
-                                            raymarching_settings.ior_water = 1.33;
-                                            raymarching_settings.extinction_coefficient = Vec3::new(0.45, 0.15, 0.1);
-                                            raymarching_settings.density_multiplier = 1.5;
-                                            raymarching_settings.density_threshold = 0.001;
-                                            raymarching_settings.absorption = 0.8;
-                                            raymarching_settings.surface_smoothness = 0.8;
-                                        }
-                                        
-                                        if ui.button("Glass-like").clicked() {
-                                            raymarching_settings.refraction_enabled = true;
-                                            raymarching_settings.reflection_enabled = true;
-                                            raymarching_settings.environment_sampling = true;
-                                            raymarching_settings.max_bounces = 4;
-                                            raymarching_settings.ior_water = 1.5;
-                                            raymarching_settings.extinction_coefficient = Vec3::new(0.01, 0.01, 0.01);
-                                            raymarching_settings.density_multiplier = 1.0;
-                                            raymarching_settings.absorption = 0.5;
-                                        }
-                                    });
                                 }
                             });
-                        
-                        // Marching cubes settings (only show when raymarching is disabled)
-                        if !raymarching_settings.enabled {
-                            egui::CollapsingHeader::new("Marching Cubes")
-                                .default_open(false)
-                                .show(ui, |ui| {
-                                     ui.horizontal(|ui| {
-                                         ui.label("Grid Resolution:");
-                                    ui.add(egui::Slider::new(&mut marching_settings.grid_resolution, 32..=128).step_by(8.0));
-                                });
-                                
-                                ui.horizontal(|ui| {
-                                    ui.label("ISO Threshold:");
-                                    ui.add(egui::Slider::new(&mut marching_settings.iso_threshold, 0.1..=2.0).step_by(0.1));
-                                });
-                                
-                                ui.horizontal(|ui| {
-                                    ui.label("Update Frequency:");
-                                    ui.add(egui::Slider::new(&mut marching_settings.update_frequency, 0.05..=1.0).step_by(0.05));
-                                     });
-                                });
-                        }
                     }
                     
                     // Fluid parameters based on current dimension

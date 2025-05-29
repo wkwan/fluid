@@ -14,12 +14,12 @@ mod ui;
 mod constants;
 use fluid::spatial_hash3d;
 mod presets;
+mod screen_space_fluid;
 
 use simulation::SimulationPlugin;
 use spawner::SpawnerPlugin;
 use gpu_fluid::GpuFluidPlugin;
 use ui::UiPlugin;
-use simulation::SurfaceDebugSettings;
 
 fn main() {
     App::new()

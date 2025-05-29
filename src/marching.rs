@@ -8,6 +8,32 @@ use bevy::render::mesh::MeshVertexBufferLayoutRef;
 use bevy::math::primitives::{Sphere, Cuboid};
 use crate::simulation::{Particle, SimulationDimension};
 use crate::simulation3d::Particle3D;
+use crate::screen_space_fluid::{render_screen_space_fluid, ScreenSpaceFluid};
+
+// Fluid rendering mode selection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
+pub enum FluidRenderMode {
+    #[default]
+    ScreenSpace,
+    RayMarching,
+    MarchingCubes,
+}
+
+// Resource to control fluid rendering settings
+#[derive(Resource, Reflect)]
+pub struct FluidRenderSettings {
+    pub show_free_surface: bool,
+    pub render_mode: FluidRenderMode,
+}
+
+impl Default for FluidRenderSettings {
+    fn default() -> Self {
+        Self {
+            show_free_surface: true,
+            render_mode: FluidRenderMode::ScreenSpace,
+        }
+    }
+}
 
 // Component to mark the free surface mesh entity
 #[derive(Component)]
@@ -150,9 +176,10 @@ const CUBE_CORNERS: [Vec3; 8] = [
     Vec3::new(1.0, 1.0, 1.0), Vec3::new(0.0, 1.0, 1.0),
 ];
 
-// System to render free surface using marching cubes
+// System to render free surface using the selected rendering method
 pub fn render_free_surface(
     sim_dim: Res<State<SimulationDimension>>,
+    render_settings: Res<FluidRenderSettings>,  // Add this parameter
     mut grid_settings: ResMut<MarchingGridSettings>,
     raymarching_settings: Res<RayMarchingSettings>,
     particles_3d: Query<&Transform, (With<Particle3D>, Without<Particle>)>,
@@ -163,100 +190,177 @@ pub fn render_free_surface(
     mut images: ResMut<Assets<Image>>,
     existing_mesh: Query<Entity, With<FreeSurfaceMesh>>,
     existing_volume: Query<Entity, With<RayMarchVolume>>,
+    existing_screen_space: Query<Entity, With<ScreenSpaceFluid>>,  // Add this parameter
     time: Res<Time>,
 ) {
+    // Early exit if free surface rendering is disabled
+    if !render_settings.show_free_surface {
+        // Clean up all existing rendering entities
+        cleanup_all_render_entities(
+            &mut commands,
+            &existing_mesh,
+            &existing_volume,
+            &existing_screen_space,
+        );
+        return;
+    }
+
     match *sim_dim.get() {
         SimulationDimension::Dim2 => {
-            // Remove existing mesh and volume in 2D mode
-            for entity in existing_mesh.iter() {
-                commands.entity(entity).despawn();
-            }
-            for entity in existing_volume.iter() {
-                commands.entity(entity).despawn();
-            }
+            // Remove all 3D rendering entities in 2D mode
+            cleanup_all_render_entities(
+                &mut commands,
+                &existing_mesh,
+                &existing_volume,
+                &existing_screen_space,
+            );
         }
         SimulationDimension::Dim3 => {
-            // If raymarching is enabled, use ray marching instead of marching cubes
-            if raymarching_settings.enabled {
-                // Remove existing marching cubes mesh
-                for entity in existing_mesh.iter() {
-                    commands.entity(entity).despawn();
-                }
-                
-                // Call ray marching system
-                render_ray_march_volume(
-                    sim_dim,
-                    raymarching_settings,
-                    particles_3d,
-                    commands,
-                    meshes,
-                    raymarch_materials,
-                    images,
-                    existing_volume,
-                    time,
-                );
-                return;
-            }
-
-            // Remove existing ray march volume if marching cubes is enabled
-            for entity in existing_volume.iter() {
-                commands.entity(entity).despawn();
-            }
-
-            // Check if enough time has passed since last update
-            let current_time = time.elapsed_secs();
-            if current_time - grid_settings.last_update < grid_settings.update_frequency {
-                return; // Skip this frame
-            }
-            grid_settings.last_update = current_time;
-
-            // Only generate surface if we have enough particles
-            let particle_count = particles_3d.iter().count();
-            if particle_count < 10 {
-                // Remove existing mesh if not enough particles
-                for entity in existing_mesh.iter() {
-                    commands.entity(entity).despawn();
-                }
-                return;
-            }
-
-            // Generate density field from particles
-            if let Some(density_field) = generate_density_field(&particles_3d, &grid_settings) {
-                // Debug: Check density field statistics
-                let max_density = density_field.iter().fold(0.0f32, |a, &b| a.max(b));
-                let avg_density = density_field.iter().sum::<f32>() / density_field.len() as f32;
-                let above_threshold = density_field.iter().filter(|&&d| d > grid_settings.iso_threshold).count();
-                
-                if current_time - grid_settings.last_update > 1.0 { // Print debug info every second
-                    println!("Marching Cubes Debug: {} particles, max_density={:.3}, avg_density={:.6}, above_threshold={}/{}, iso_threshold={:.3}", 
-                             particle_count, max_density, avg_density, above_threshold, density_field.len(), grid_settings.iso_threshold);
-                }
-                
-                // Generate surface mesh using simplified marching cubes
-                if let Some(mesh_data) = generate_surface_mesh(&density_field, &grid_settings) {
-                    let (ref vertices, ref indices, _) = mesh_data;
-                    if current_time - grid_settings.last_update > 1.0 {
-                        println!("Generated surface mesh: {} vertices, {} triangles", vertices.len(), indices.len() / 3);
-                    }
-                    spawn_3d_surface_mesh(&mut commands, &mut meshes, &mut materials_3d, mesh_data, &existing_mesh);
-                } else {
-                    if current_time - grid_settings.last_update > 1.0 {
-                        println!("No surface mesh generated");
-                    }
-                    // Remove existing mesh if no surface generated
+            // Render based on selected mode
+            match render_settings.render_mode {
+                FluidRenderMode::ScreenSpace => {
+                    // Clean up other modes
                     for entity in existing_mesh.iter() {
                         commands.entity(entity).despawn();
                     }
+                    for entity in existing_volume.iter() {
+                        commands.entity(entity).despawn();
+                    }
+                    
+                    // Screen space rendering (placeholder for now)
+                    render_screen_space_fluid(
+                        &particles_3d,
+                        &mut commands,
+                        &existing_screen_space,
+                    );
                 }
-            } else {
-                if current_time - grid_settings.last_update > 1.0 {
-                    println!("No density field generated");
+                FluidRenderMode::RayMarching => {
+                    // Clean up other modes
+                    for entity in existing_mesh.iter() {
+                        commands.entity(entity).despawn();
+                    }
+                    for entity in existing_screen_space.iter() {
+                        commands.entity(entity).despawn();
+                    }
+                    
+                    // Call existing ray marching implementation
+                    render_ray_march_volume(
+                        sim_dim,
+                        raymarching_settings,
+                        particles_3d,
+                        commands,
+                        meshes,
+                        raymarch_materials,
+                        images,
+                        existing_volume,
+                        time,
+                    );
                 }
-                // Remove existing mesh if no surface generated
-                for entity in existing_mesh.iter() {
-                    commands.entity(entity).despawn();
+                FluidRenderMode::MarchingCubes => {
+                    // Clean up other modes
+                    for entity in existing_volume.iter() {
+                        commands.entity(entity).despawn();
+                    }
+                    for entity in existing_screen_space.iter() {
+                        commands.entity(entity).despawn();
+                    }
+                    
+                    // Existing marching cubes implementation
+                    render_marching_cubes(
+                        &particles_3d,
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials_3d,
+                        &mut grid_settings,
+                        &existing_mesh,
+                        &time,
+                    );
                 }
             }
+        }
+    }
+}
+
+// Helper function to clean up render entities
+fn cleanup_all_render_entities(
+    commands: &mut Commands,
+    existing_mesh: &Query<Entity, With<FreeSurfaceMesh>>,
+    existing_volume: &Query<Entity, With<RayMarchVolume>>,
+    existing_screen_space: &Query<Entity, With<ScreenSpaceFluid>>,
+) {
+    for entity in existing_mesh.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in existing_volume.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in existing_screen_space.iter() {
+        commands.entity(entity).despawn();
+    }
+}
+
+// Extracted marching cubes implementation
+fn render_marching_cubes(
+    particles_3d: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials_3d: &mut ResMut<Assets<StandardMaterial>>,
+    grid_settings: &mut ResMut<MarchingGridSettings>,
+    existing_mesh: &Query<Entity, With<FreeSurfaceMesh>>,
+    time: &Res<Time>,
+) {
+    // Check if enough time has passed since last update
+    let current_time = time.elapsed_secs();
+    if current_time - grid_settings.last_update < grid_settings.update_frequency {
+        return; // Skip this frame
+    }
+    grid_settings.last_update = current_time;
+
+    // Only generate surface if we have enough particles
+    let particle_count = particles_3d.iter().count();
+    if particle_count < 10 {
+        // Remove existing mesh if not enough particles
+        for entity in existing_mesh.iter() {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+
+    // Generate density field from particles
+    if let Some(density_field) = generate_density_field(particles_3d, grid_settings) {
+        // Debug: Check density field statistics
+        let max_density = density_field.iter().fold(0.0f32, |a, &b| a.max(b));
+        let avg_density = density_field.iter().sum::<f32>() / density_field.len() as f32;
+        let above_threshold = density_field.iter().filter(|&&d| d > grid_settings.iso_threshold).count();
+        
+        if current_time - grid_settings.last_update > 1.0 { // Print debug info every second
+            println!("Marching Cubes Debug: {} particles, max_density={:.3}, avg_density={:.6}, above_threshold={}/{}, iso_threshold={:.3}", 
+                     particle_count, max_density, avg_density, above_threshold, density_field.len(), grid_settings.iso_threshold);
+        }
+        
+        // Generate surface mesh using simplified marching cubes
+        if let Some(mesh_data) = generate_surface_mesh(&density_field, grid_settings) {
+            let (ref vertices, ref indices, _) = mesh_data;
+            if current_time - grid_settings.last_update > 1.0 {
+                println!("Generated surface mesh: {} vertices, {} triangles", vertices.len(), indices.len() / 3);
+            }
+            spawn_3d_surface_mesh(commands, meshes, materials_3d, mesh_data, existing_mesh);
+        } else {
+            if current_time - grid_settings.last_update > 1.0 {
+                println!("No surface mesh generated");
+            }
+            // Remove existing mesh if no surface generated
+            for entity in existing_mesh.iter() {
+                commands.entity(entity).despawn();
+            }
+        }
+    } else {
+        if current_time - grid_settings.last_update > 1.0 {
+            println!("No density field generated");
+        }
+        // Remove existing mesh if no surface generated
+        for entity in existing_mesh.iter() {
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -552,6 +656,7 @@ pub struct RayMarchPlugin;
 impl Plugin for RayMarchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RayMarchingSettings>()
+            .init_resource::<FluidRenderSettings>()
             .add_plugins(MaterialPlugin::<RayMarchMaterial>::default())
             .add_systems(Update, update_ray_march_material);
     }

@@ -15,6 +15,7 @@ pub mod gpu_fluid3d;
 pub mod gpu_render3d;
 pub mod presets;
 pub mod constants;
+pub mod screen_space_fluid;
 
 use bevy::prelude::*;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
