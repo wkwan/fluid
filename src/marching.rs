@@ -53,7 +53,7 @@ impl Default for RayMarchingSettings {
             quality: 1.0,
             step_count: 32, // Reduced for better performance
             density_multiplier: 10.0, // Much higher for visibility
-            density_threshold: 0.00001, // Very low threshold
+            density_threshold: 0.001, // Higher threshold for smoother surfaces
             absorption: 5.0, // Much higher for better visibility
             scattering: 1.0,
             light_intensity: 5.0, // Much brighter
@@ -65,8 +65,8 @@ impl Default for RayMarchingSettings {
             max_bounces: 4,
             ior_water: 1.33,
             ior_air: 1.0,
-            extinction_coefficient: Vec3::new(0.0, 0.0, 0.0),
-            surface_smoothness: 0.5,
+            extinction_coefficient: Vec3::new(0.45, 0.15, 0.1),
+            surface_smoothness: 0.8, // Higher smoothness by default
         }
     }
 }
@@ -620,7 +620,7 @@ impl Default for RayMarchMaterial {
             max_bounces: 4,
             ior_water: 1.33,
             ior_air: 1.0,
-            extinction_coefficient: Vec3::new(0.0, 0.0, 0.0),
+            extinction_coefficient: Vec3::new(0.45, 0.15, 0.1),
             surface_smoothness: 0.5,
             density_texture: None,
         }
@@ -759,12 +759,12 @@ fn generate_density_texture(
     particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
     images: &mut ResMut<Assets<Image>>,
 ) -> Option<(Handle<Image>, f32)> {
-    let resolution = 32u32; // Reduced for better performance
+    let resolution = 96u32; // Increased to 96 for even smoother surfaces
     let bounds_min = Vec3::new(-150.0, -350.0, -150.0);
     let bounds_max = Vec3::new(150.0, 200.0, 150.0);
     let bounds_size = bounds_max - bounds_min;
     let cell_size = bounds_size / resolution as f32;
-    let smoothing_radius = 30.0; // Reduced for tighter density field
+    let smoothing_radius = 50.0; // Increased for even smoother blending
 
     // Collect particle positions
     let particle_positions: Vec<Vec3> = particles.iter().map(|t| t.translation).collect();
@@ -776,7 +776,7 @@ fn generate_density_texture(
     // Generate density field with improved kernel
     let mut density_data = vec![0.0f32; (resolution * resolution * resolution) as usize];
     let mut max_density = 0.0f32;
-    let mut non_zero_cells = 0;
+    let mut _non_zero_cells = 0;
     
     for i in 0..resolution {
         for j in 0..resolution {
@@ -791,15 +791,18 @@ fn generate_density_texture(
                 for &particle_pos in &particle_positions {
                     let distance = (grid_pos - particle_pos).length();
                     if distance < smoothing_radius {
-                        // Use a simpler, stronger kernel function
+                        // Use an even smoother kernel function
                         let normalized_distance = distance / smoothing_radius;
-                        let falloff = 1.0 - normalized_distance;
                         
-                        // Simple quadratic kernel for stronger density
-                        let kernel_value = falloff * falloff;
-                        
-                        // Add particle mass influence - much stronger
-                        density += kernel_value * 5.0; // Increased from 1.0 to 5.0
+                        // Wendland C2 kernel for maximum smoothness
+                        if normalized_distance <= 1.0 {
+                            let one_minus_r = 1.0 - normalized_distance;
+                            let kernel_value = one_minus_r * one_minus_r * one_minus_r * one_minus_r * (4.0 * normalized_distance + 1.0);
+                            
+                            // Normalize the kernel (approximate normalization for 3D)
+                            let normalized_kernel = kernel_value * 21.0 / (16.0 * std::f32::consts::PI * smoothing_radius * smoothing_radius * smoothing_radius);
+                            density += normalized_kernel * 12.0; // Adjusted scaling for visibility
+                        }
                     }
                 }
                 
@@ -807,7 +810,7 @@ fn generate_density_texture(
                 density_data[index] = density;
                 
                 if density > 0.0 {
-                    non_zero_cells += 1;
+                    _non_zero_cells += 1;
                     max_density = max_density.max(density);
                 }
             }
@@ -818,10 +821,77 @@ fn generate_density_texture(
         return None;
     }
 
-    // Convert to bytes for texture - store raw density values
-    let mut texture_data = Vec::with_capacity(density_data.len() * 4);
+    // Apply two passes of smoothing for ultra-smooth surfaces
+    let mut smoothed_data = density_data.clone();
     
-    for density in density_data {
+    // First smoothing pass
+    for i in 1..(resolution - 1) {
+        for j in 1..(resolution - 1) {
+            for k in 1..(resolution - 1) {
+                let index = (i * resolution * resolution + j * resolution + k) as usize;
+                
+                // 3x3x3 smoothing kernel
+                let mut sum = 0.0;
+                let mut count = 0;
+                for di in -1i32..=1 {
+                    for dj in -1i32..=1 {
+                        for dk in -1i32..=1 {
+                            let ni = (i as i32 + di) as usize;
+                            let nj = (j as i32 + dj) as usize;
+                            let nk = (k as i32 + dk) as usize;
+                            
+                            if ni < resolution as usize && nj < resolution as usize && nk < resolution as usize {
+                                let neighbor_index = ni * resolution as usize * resolution as usize + nj * resolution as usize + nk;
+                                sum += density_data[neighbor_index];
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+                
+                // Blend original with smoothed value
+                let smoothed_value = sum / count as f32;
+                smoothed_data[index] = density_data[index] * 0.6 + smoothed_value * 0.4; // More smoothing
+            }
+        }
+    }
+    
+    // Second smoothing pass for extra smoothness
+    let mut final_data = smoothed_data.clone();
+    for i in 1..(resolution - 1) {
+        for j in 1..(resolution - 1) {
+            for k in 1..(resolution - 1) {
+                let index = (i * resolution * resolution + j * resolution + k) as usize;
+                
+                // Smaller 2x2x2 smoothing kernel for fine details
+                let mut sum = 0.0;
+                let mut count = 0;
+                for di in 0i32..=1 {
+                    for dj in 0i32..=1 {
+                        for dk in 0i32..=1 {
+                            let ni = (i as i32 + di) as usize;
+                            let nj = (j as i32 + dj) as usize;
+                            let nk = (k as i32 + dk) as usize;
+                            
+                            if ni < resolution as usize && nj < resolution as usize && nk < resolution as usize {
+                                let neighbor_index = ni * resolution as usize * resolution as usize + nj * resolution as usize + nk;
+                                sum += smoothed_data[neighbor_index];
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+                
+                let fine_smoothed = sum / count as f32;
+                final_data[index] = smoothed_data[index] * 0.8 + fine_smoothed * 0.2;
+            }
+        }
+    }
+
+    // Convert to bytes for texture - store raw density values
+    let mut texture_data = Vec::with_capacity(final_data.len() * 4);
+    
+    for density in final_data {
         // Store density directly in red channel (0-1 range)
         let normalized_density = (density / max_density).clamp(0.0, 1.0);
         let value = (normalized_density * 255.0) as u8;

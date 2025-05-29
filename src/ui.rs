@@ -295,9 +295,11 @@ fn draw_ui(
                                             raymarching_settings.environment_sampling = true;
                                             raymarching_settings.max_bounces = 3;
                                             raymarching_settings.ior_water = 1.33;
-                                            raymarching_settings.extinction_coefficient = Vec3::new(0.1, 0.05, 0.02);
-                                            raymarching_settings.density_multiplier = 2.0;
-                                            raymarching_settings.absorption = 1.0;
+                                            raymarching_settings.extinction_coefficient = Vec3::new(0.45, 0.15, 0.1);
+                                            raymarching_settings.density_multiplier = 1.5;
+                                            raymarching_settings.density_threshold = 0.001;
+                                            raymarching_settings.absorption = 0.8;
+                                            raymarching_settings.surface_smoothness = 0.8;
                                         }
                                         
                                         if ui.button("Glass-like").clicked() {

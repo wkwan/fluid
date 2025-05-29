@@ -65,7 +65,7 @@ fn ray_box_intersection(ray_origin: vec3<f32>, ray_dir: vec3<f32>, box_min: vec3
     return vec2<f32>(max(t_near, 0.0), t_far);
 }
 
-// Sample density from 3D texture
+// Sample density from 3D texture with trilinear interpolation
 fn sample_density(world_pos: vec3<f32>) -> f32 {
     // Convert world position to texture coordinates (0-1)
     let bounds_size = material.bounds_max - material.bounds_min;
@@ -81,8 +81,8 @@ fn sample_density(world_pos: vec3<f32>) -> f32 {
         return -material.density_threshold; // Return negative value at edges
     }
     
-    // Sample the density texture
-    let density_sample = textureSample(density_texture, density_sampler, tex_coords);
+    // Sample the density texture with trilinear interpolation
+    let density_sample = textureSampleLevel(density_texture, density_sampler, tex_coords, 0.0);
     
     // Extract density from red channel
     let raw_density = density_sample.r;
@@ -98,25 +98,48 @@ fn sample_density(world_pos: vec3<f32>) -> f32 {
     return final_density;
 }
 
-// Calculate normal using gradient
+// Calculate normal using improved gradient estimation
 fn calculate_normal(pos: vec3<f32>) -> vec3<f32> {
-    let offset = 2.0;
-    let offset_x = vec3<f32>(offset, 0.0, 0.0);
-    let offset_y = vec3<f32>(0.0, offset, 0.0);
-    let offset_z = vec3<f32>(0.0, 0.0, offset);
+    let offset = 0.25; // Very small offset for fine detail
     
-    let dx = sample_density(pos - offset_x) - sample_density(pos + offset_x);
-    let dy = sample_density(pos - offset_y) - sample_density(pos + offset_y);
-    let dz = sample_density(pos - offset_z) - sample_density(pos + offset_z);
+    // Use central differences for more accurate gradient
+    let dx = sample_density(pos + vec3<f32>(offset, 0.0, 0.0)) - sample_density(pos - vec3<f32>(offset, 0.0, 0.0));
+    let dy = sample_density(pos + vec3<f32>(0.0, offset, 0.0)) - sample_density(pos - vec3<f32>(0.0, offset, 0.0));
+    let dz = sample_density(pos + vec3<f32>(0.0, 0.0, offset)) - sample_density(pos - vec3<f32>(0.0, 0.0, offset));
     
     let gradient = vec3<f32>(dx, dy, dz);
     let gradient_length = length(gradient);
     
-    return select(
+    // Calculate a base normal from the gradient
+    let volume_normal = select(
         vec3<f32>(0.0, 1.0, 0.0), // Default up normal
         normalize(gradient),
-        gradient_length > 0.001
+        gradient_length > 0.00001 // Very low threshold for responsiveness
     );
+    
+    // Sample additional points for smoother normal estimation
+    let offset2 = offset * 0.5;
+    let dx2 = sample_density(pos + vec3<f32>(offset2, 0.0, 0.0)) - sample_density(pos - vec3<f32>(offset2, 0.0, 0.0));
+    let dy2 = sample_density(pos + vec3<f32>(0.0, offset2, 0.0)) - sample_density(pos - vec3<f32>(0.0, offset2, 0.0));
+    let dz2 = sample_density(pos + vec3<f32>(0.0, 0.0, offset2)) - sample_density(pos - vec3<f32>(0.0, 0.0, offset2));
+    
+    let gradient2 = vec3<f32>(dx2, dy2, dz2);
+    let gradient2_length = length(gradient2);
+    
+    let volume_normal2 = select(
+        vec3<f32>(0.0, 1.0, 0.0),
+        normalize(gradient2),
+        gradient2_length > 0.00001
+    );
+    
+    // Blend the two normal estimates for smoother results
+    let blended_normal = normalize(volume_normal + volume_normal2);
+    
+    // Apply surface smoothness
+    let smoothing_factor = material.surface_smoothness;
+    let final_normal = normalize(mix(blended_normal, vec3<f32>(0.0, 1.0, 0.0), smoothing_factor * 0.3));
+    
+    return final_normal;
 }
 
 // Check if position is inside fluid
@@ -152,7 +175,7 @@ fn calculate_density_along_ray(ray_pos: vec3<f32>, ray_dir: vec3<f32>, step_size
     return total_density;
 }
 
-// Find next surface along ray
+// Find next surface along ray using gradient-based detection
 fn find_next_surface(origin: vec3<f32>, ray_dir: vec3<f32>, find_entry_point: bool) -> SurfaceInfo {
     var info: SurfaceInfo;
     info.found_surface = false;
@@ -175,41 +198,78 @@ fn find_next_surface(origin: vec3<f32>, ray_dir: vec3<f32>, find_entry_point: bo
         return info;
     }
     
-    let step_size = material.step_size;
+    let step_size = material.step_size * 0.25; // Even smaller steps for smoother detection
     let num_steps = max(1u, u32(ray_length / step_size));
     let actual_step_size = ray_length / f32(num_steps);
     
-    var has_exited_fluid = !is_inside_fluid(origin);
-    var has_entered_fluid = false;
-    var last_pos_in_fluid = origin;
+    // Use a density threshold for surface detection
+    let surface_threshold = material.density_threshold * 3.0;
     
-    for (var i = 0u; i < num_steps; i++) {
+    var last_density = sample_density(origin);
+    var last_inside = last_density > surface_threshold;
+    
+    for (var i = 1u; i < num_steps; i++) {
         let t = t_start + f32(i) * actual_step_size;
         let sample_pos = origin + ray_dir * t;
         let density = sample_density(sample_pos);
-        let inside_fluid = density > 0.0; // Use 0.0 threshold like Unity
+        let inside_fluid = density > surface_threshold;
         
+        // Accumulate density for lighting calculations
         if (inside_fluid) {
-            has_entered_fluid = true;
-            last_pos_in_fluid = sample_pos;
-            // Only accumulate positive density
             info.density_along_ray += max(0.0, density) * actual_step_size;
-        } else {
-            has_exited_fluid = true;
         }
         
-        let found = select(
-            has_entered_fluid && !inside_fluid, // Exit point
-            inside_fluid && has_exited_fluid,   // Entry point
+        // Check for surface crossing
+        let surface_crossing = select(
+            last_inside && !inside_fluid, // Exit point (inside to outside)
+            !last_inside && inside_fluid, // Entry point (outside to inside)
             find_entry_point
         );
         
-        if (found) {
-            info.pos = last_pos_in_fluid;
-            info.normal = calculate_normal(last_pos_in_fluid);
+        if (surface_crossing) {
+            // Use binary search for precise surface location
+            let prev_t = t_start + f32(i - 1u) * actual_step_size;
+            let prev_pos = origin + ray_dir * prev_t;
+            
+            // Binary search between prev_pos and sample_pos
+            var search_start = prev_pos;
+            var search_end = sample_pos;
+            var search_density_start = last_density;
+            var search_density_end = density;
+            
+            // Perform 8 iterations of binary search for precision
+            for (var search_iter = 0u; search_iter < 8u; search_iter++) {
+                let mid_pos = (search_start + search_end) * 0.5;
+                let mid_density = sample_density(mid_pos);
+                let mid_inside = mid_density > surface_threshold;
+                
+                if (select(!mid_inside, mid_inside, find_entry_point)) {
+                    search_end = mid_pos;
+                    search_density_end = mid_density;
+                } else {
+                    search_start = mid_pos;
+                    search_density_start = mid_density;
+                }
+            }
+            
+            // Final interpolation for sub-voxel precision
+            let final_pos = (search_start + search_end) * 0.5;
+            let density_diff = abs(search_density_end - search_density_start);
+            
+            if (density_diff > 0.001) {
+                let interpolation_factor = abs(surface_threshold - search_density_start) / density_diff;
+                info.pos = mix(search_start, search_end, clamp(interpolation_factor, 0.0, 1.0));
+            } else {
+                info.pos = final_pos;
+            }
+            
+            info.normal = calculate_normal(info.pos);
             info.found_surface = true;
             break;
         }
+        
+        last_density = density;
+        last_inside = inside_fluid;
     }
     
     return info;
@@ -255,30 +315,34 @@ fn reflect_ray(in_dir: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
 
 // Sample environment (simplified sky)
 fn sample_environment(dir: vec3<f32>) -> vec3<f32> {
-    // Simple sky gradient
-    let sky_horizon = vec3<f32>(0.8, 0.9, 1.0);
-    let sky_zenith = vec3<f32>(0.3, 0.6, 1.0);
-    let ground_color = vec3<f32>(0.3, 0.25, 0.2);
+    // More realistic sky colors (less saturated, more neutral)
+    let sky_horizon = vec3<f32>(0.9, 0.95, 1.0);  // Lighter, less blue
+    let sky_zenith = vec3<f32>(0.5, 0.7, 0.9);    // Less saturated blue
+    let ground_color = vec3<f32>(0.4, 0.35, 0.3); // Warmer ground
     
     let sky_gradient_t = pow(smoothstep(0.0, 0.4, dir.y), 0.35);
     let ground_to_sky_t = smoothstep(-0.01, 0.0, dir.y);
     let sky_gradient = mix(sky_horizon, sky_zenith, sky_gradient_t);
     
-    // Simple sun
+    // Brighter, more prominent sun
     let sun_dir = normalize(vec3<f32>(0.3, 0.8, 0.3));
-    let sun = pow(max(0.0, dot(dir, sun_dir)), 500.0);
+    let sun = pow(max(0.0, dot(dir, sun_dir)), 200.0) * 2.0; // Larger, brighter sun
     
     return mix(ground_color, sky_gradient, ground_to_sky_t) + sun * ground_to_sky_t;
 }
 
 // Calculate transmittance through medium
 fn transmittance(thickness: f32) -> vec3<f32> {
+    // More realistic water absorption - water absorbs red more than blue/green
     let extinction_coeff = select(
         material.extinction_coefficient,
-        vec3<f32>(0.1, 0.05, 0.02), // Default water-like absorption
+        vec3<f32>(0.45, 0.15, 0.1), // Red absorbed more, blue/green less
         all(material.extinction_coefficient == vec3<f32>(0.0))
     );
-    return exp(-thickness * extinction_coeff);
+    
+    // Apply water color tinting - subtle blue-green tint
+    let water_tint = vec3<f32>(0.9, 0.95, 1.0); // Slight blue tint
+    return exp(-thickness * extinction_coeff) * water_tint;
 }
 
 @fragment
@@ -343,9 +407,38 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         // Choose the more significant path based on enabled features
         let can_refract = use_refraction && length(refract_dir) > 0.5;
         let can_reflect = use_reflection;
-        let use_refraction_path = can_refract && (reflectance < 0.5 || !can_reflect);
         
-        if (use_refraction_path) {
+        // More sophisticated path selection like Unity
+        if (can_refract && can_reflect) {
+            // Calculate density along both paths to choose the more interesting one
+            let density_along_refract = calculate_density_along_ray(surface_info.pos, refract_dir, material.step_size);
+            let density_along_reflect = calculate_density_along_ray(surface_info.pos, reflect_dir, material.step_size);
+            
+            // Weight by both density and fresnel terms
+            let refract_weight = density_along_refract * (1.0 - reflectance);
+            let reflect_weight = density_along_reflect * reflectance;
+            
+            let use_refraction_path = refract_weight > reflect_weight;
+            
+            if (use_refraction_path) {
+                // Approximate the reflection path
+                accumulated_light += sample_environment(reflect_dir) * transmittance_factor * transmittance(density_along_reflect) * reflectance;
+                
+                // Follow refraction path
+                current_ray_pos = surface_info.pos + refract_dir * TINY_NUDGE;
+                current_ray_dir = refract_dir;
+                travelling_through_fluid = !travelling_through_fluid;
+                transmittance_factor *= (1.0 - reflectance);
+            } else {
+                // Approximate the refraction path
+                accumulated_light += sample_environment(refract_dir) * transmittance_factor * transmittance(density_along_refract) * (1.0 - reflectance);
+                
+                // Follow reflection path
+                current_ray_pos = surface_info.pos + reflect_dir * TINY_NUDGE;
+                current_ray_dir = reflect_dir;
+                transmittance_factor *= reflectance;
+            }
+        } else if (can_refract) {
             // Follow refraction path
             current_ray_pos = surface_info.pos + refract_dir * TINY_NUDGE;
             current_ray_dir = refract_dir;
