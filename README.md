@@ -1,7 +1,11 @@
 # Purpose
 To experiment with different techniques for real-time fluid simulation and rendering in Rust/WGSL/Bevy by making a beautiful realistic lake drawing toy.
 
-Fluid simulation is currently done with a particle-based approach called Smoothed Particle Hydrodynamics (SPH). Code is heavily based off of https://github.com/SebLague/Fluid-Sim
+Fluid simulation is done with a particle-based approach called Smoothed Particle Hydrodynamics (SPH). Code is heavily based off of https://github.com/SebLague/Fluid-Sim
+
+2D mode can be enabled in the left menu but development focus is on 3D.
+
+3D fluid rendering can be toggled between 3 separate pipelines. Development focus is on screen space rendering to balance realism with performance, but raymarching (most realistic) and marching cubes (fastest) are both implemented.
 
 Kanban board: https://github.com/users/wkwan/projects/2
 
