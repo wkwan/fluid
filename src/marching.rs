@@ -173,6 +173,16 @@ fn cleanup_all_render_entities(
     }
 }
 
+// System to clean up free surface entities when show_free_surface is disabled
+fn cleanup_free_surface_system(
+    mut commands: Commands,
+    existing_mesh: Query<Entity, With<FreeSurfaceMesh>>,
+    existing_volume: Query<Entity, With<RayMarchVolume>>,
+    existing_screen_space: Query<Entity, With<ScreenSpaceFluid>>,
+) {
+    cleanup_all_render_entities(&mut commands, &existing_mesh, &existing_volume, &existing_screen_space);
+}
+
 // Plugin for ray marching functionality
 pub struct RayMarchPlugin;
 
@@ -185,6 +195,11 @@ impl Plugin for RayMarchPlugin {
             .add_systems(Update, render_free_surface_system
                 .run_if(|settings: Res<FluidRenderSettings>, sim_dim: Res<State<SimulationDimension>>| 
                     settings.show_free_surface && *sim_dim.get() == SimulationDimension::Dim3)
+            )
+            .add_systems(Update, cleanup_free_surface_system
+                .run_if(|settings: Res<FluidRenderSettings>, sim_dim: Res<State<SimulationDimension>>| 
+                    (!settings.show_free_surface && *sim_dim.get() == SimulationDimension::Dim3) || 
+                    *sim_dim.get() == SimulationDimension::Dim2)
             )
             .add_systems(Update, crate::screen_space_fluid::render_screen_space_fluid_system
                 .run_if(|settings: Res<FluidRenderSettings>, sim_dim: Res<State<SimulationDimension>>| 

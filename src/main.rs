@@ -5,7 +5,6 @@ use bevy_egui::EguiPlugin;
 mod simulation;
 mod spawner;
 mod spatial_hash;
-mod math;
 mod marching;
 mod gpu_fluid;
 mod simulation3d;

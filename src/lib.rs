@@ -1,4 +1,3 @@
-pub mod math;
 pub mod spatial_hash;
 pub mod spatial_hash3d;
 pub mod marching;
