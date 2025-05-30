@@ -21,6 +21,8 @@ use gpu_fluid::GpuParticles; // Use GpuParticles from gpu_fluid instead
 // Re-exports
 pub use gpu_fluid::{GpuFluidPlugin, GpuState, GpuPerformanceStats};
 pub use simulation::FluidParams;
+pub use marching::RayMarchPlugin;
+pub use screen_space_fluid::ScreenSpaceFluidPlugin;
 
 pub fn app() -> App {
     let mut app = App::new();
@@ -33,6 +35,8 @@ pub fn app() -> App {
         .add_plugins(reordering::ParticleReorderingPlugin)
         .add_plugins(gpu_render3d::GpuRender3DPlugin)
         .add_plugins(gpu_fluid3d::GpuSim3DPlugin)
+        .add_plugins(RayMarchPlugin)
+        .add_plugins(ScreenSpaceFluidPlugin)
         .init_resource::<GpuParticles>();
     
     app
@@ -50,6 +54,8 @@ impl Plugin for FluidPlugin {
             reordering::ParticleReorderingPlugin,
             gpu_render3d::GpuRender3DPlugin,
             gpu_fluid3d::GpuSim3DPlugin,
+            RayMarchPlugin,
+            ScreenSpaceFluidPlugin,
         ));
     }
 } 

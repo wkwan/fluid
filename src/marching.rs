@@ -10,37 +10,12 @@ use bevy::{
 use crate::simulation3d::Particle3D;
 use crate::simulation::Particle;
 use crate::simulation::SimulationDimension;
-use crate::screen_space_fluid::ScreenSpaceFluid;
 use crate::constants::{RAY_MARCH_BOUNDS_MIN, RAY_MARCH_BOUNDS_MAX};
 
 /// Helper function to despawn entities from a query
 fn despawn_entities<T: Component>(commands: &mut Commands, query: &Query<Entity, With<T>>) {
     for entity in query.iter() {
         commands.entity(entity).despawn();
-    }
-}
-
-// Fluid rendering mode selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
-pub enum FluidRenderMode {
-    #[default]
-    ScreenSpace,
-    RayMarching
-}
-
-// Resource to control fluid rendering settings
-#[derive(Resource, Reflect)]
-pub struct FluidRenderSettings {
-    pub show_free_surface: bool,
-    pub render_mode: FluidRenderMode,
-}
-
-impl Default for FluidRenderSettings {
-    fn default() -> Self {
-        Self {
-            show_free_surface: true,
-            render_mode: FluidRenderMode::ScreenSpace,
-        }
     }
 }
 
@@ -75,7 +50,7 @@ pub struct RayMarchingSettings {
 impl Default for RayMarchingSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false, // Disabled by default
             quality: 1.0,
             step_count: 32, // Reduced for better performance
             density_multiplier: 10.0, // Much higher for visibility
@@ -100,7 +75,6 @@ impl Default for RayMarchingSettings {
 // Main system for rendering the free surface
 pub fn render_free_surface_system(
     sim_dim: Res<State<SimulationDimension>>,
-    render_settings: Res<FluidRenderSettings>,
     raymarching_settings: Res<RayMarchingSettings>,
     particles_3d: Query<&Transform, (With<Particle3D>, Without<Particle>)>,
     mut commands: Commands,
@@ -109,50 +83,34 @@ pub fn render_free_surface_system(
     images: ResMut<Assets<Image>>,
     existing_mesh: Query<Entity, With<FreeSurfaceMesh>>,
     existing_volume: Query<Entity, With<RayMarchVolume>>,
-    existing_screen_space: Query<Entity, With<ScreenSpaceFluid>>,
     time: Res<Time>,
 ) {
     // Only proceed if 3D mode and free surface rendering is enabled
-    if *sim_dim.get() != SimulationDimension::Dim3 || !render_settings.show_free_surface {
+    if *sim_dim.get() != SimulationDimension::Dim3 || !raymarching_settings.enabled {
         // Clean up any existing render entities
-        cleanup_all_render_entities(&mut commands, &existing_mesh, &existing_volume, &existing_screen_space);
+        cleanup_all_render_entities(&mut commands, &existing_mesh, &existing_volume);
         return;
     }
     
     // Check if we have enough particles
     let particle_count = particles_3d.iter().count();
     if particle_count < 10 {
-        cleanup_all_render_entities(&mut commands, &existing_mesh, &existing_volume, &existing_screen_space);
+        cleanup_all_render_entities(&mut commands, &existing_mesh, &existing_volume);
         return;
     }
     
-    // Handle different rendering modes
-    match render_settings.render_mode {
-        FluidRenderMode::ScreenSpace => {
-            // Clean up other modes
-            despawn_entities(&mut commands, &existing_mesh);
-            despawn_entities(&mut commands, &existing_volume);
-            // Screen space rendering is handled by its own system
-        }
-        FluidRenderMode::RayMarching => {
-            // Clean up other modes
-            despawn_entities(&mut commands, &existing_mesh);
-            despawn_entities(&mut commands, &existing_screen_space);
-            
-            // Call existing ray marching implementation
-            render_ray_march_volume(
-                sim_dim,
-                raymarching_settings,
-                particles_3d,
-                commands,
-                meshes,
-                raymarch_materials,
-                images,
-                existing_volume,
-                time,
-            );
-        }
-    }
+    // Call existing ray marching implementation
+    render_ray_march_volume(
+        sim_dim,
+        raymarching_settings,
+        particles_3d,
+        commands,
+        meshes,
+        raymarch_materials,
+        images,
+        existing_volume,
+        time,
+    );
 }
 
 // Helper function to clean up render entities
@@ -160,11 +118,9 @@ fn cleanup_all_render_entities(
     commands: &mut Commands,
     existing_mesh: &Query<Entity, With<FreeSurfaceMesh>>,
     existing_volume: &Query<Entity, With<RayMarchVolume>>,
-    existing_screen_space: &Query<Entity, With<ScreenSpaceFluid>>,
 ) {
     despawn_entities(commands, existing_mesh);
     despawn_entities(commands, existing_volume);
-    despawn_entities(commands, existing_screen_space);
 }
 
 // System to clean up free surface entities when show_free_surface is disabled
@@ -172,9 +128,8 @@ fn cleanup_free_surface_system(
     mut commands: Commands,
     existing_mesh: Query<Entity, With<FreeSurfaceMesh>>,
     existing_volume: Query<Entity, With<RayMarchVolume>>,
-    existing_screen_space: Query<Entity, With<ScreenSpaceFluid>>,
 ) {
-    cleanup_all_render_entities(&mut commands, &existing_mesh, &existing_volume, &existing_screen_space);
+    cleanup_all_render_entities(&mut commands, &existing_mesh, &existing_volume);
 }
 
 // Plugin for ray marching functionality
@@ -183,23 +138,16 @@ pub struct RayMarchPlugin;
 impl Plugin for RayMarchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RayMarchingSettings>()
-            .init_resource::<FluidRenderSettings>()
             .add_plugins(MaterialPlugin::<RayMarchMaterial>::default())
             .add_systems(Update, update_ray_march_material)
             .add_systems(Update, render_free_surface_system
-                .run_if(|settings: Res<FluidRenderSettings>, sim_dim: Res<State<SimulationDimension>>| 
-                    settings.show_free_surface && *sim_dim.get() == SimulationDimension::Dim3)
+                .run_if(|settings: Res<RayMarchingSettings>, sim_dim: Res<State<SimulationDimension>>| 
+                    settings.enabled && *sim_dim.get() == SimulationDimension::Dim3)
             )
             .add_systems(Update, cleanup_free_surface_system
-                .run_if(|settings: Res<FluidRenderSettings>, sim_dim: Res<State<SimulationDimension>>| 
-                    (!settings.show_free_surface && *sim_dim.get() == SimulationDimension::Dim3) || 
+                .run_if(|settings: Res<RayMarchingSettings>, sim_dim: Res<State<SimulationDimension>>| 
+                    (!settings.enabled && *sim_dim.get() == SimulationDimension::Dim3) || 
                     *sim_dim.get() == SimulationDimension::Dim2)
-            )
-            .add_systems(Update, crate::screen_space_fluid::render_screen_space_fluid_system
-                .run_if(|settings: Res<FluidRenderSettings>, sim_dim: Res<State<SimulationDimension>>| 
-                    settings.show_free_surface && 
-                    settings.render_mode == FluidRenderMode::ScreenSpace && 
-                    *sim_dim.get() == SimulationDimension::Dim3)
             );
     }
 }

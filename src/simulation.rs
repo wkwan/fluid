@@ -142,9 +142,6 @@ impl Plugin for SimulationPlugin {
            .add_systems(Update, update_fps_display)
             .add_systems(Update, track_max_velocity)
             .add_systems(Update, handle_reset_sim)
-            .add_systems(Update, render_free_surface_simple
-                .run_if(in_state(SimulationDimension::Dim3))
-            )
             // Orbit camera (3D only)
             .add_systems(Update, (
                 spawn_orbit_camera,
@@ -1036,20 +1033,3 @@ fn update_spatial_hash_on_radius_change_3d(
     }
 }
 
-// Simplified system that checks render mode and calls appropriate renderer
-fn render_free_surface_simple(
-    render_settings: Res<crate::marching::FluidRenderSettings>,
-) {
-    // The actual rendering is handled by mode-specific systems
-    // This just tracks which mode is active for debugging
-    if render_settings.show_free_surface {
-        match render_settings.render_mode {
-            crate::marching::FluidRenderMode::ScreenSpace => {
-                // Screen space rendering is handled by render_screen_space_fluid_system
-            }
-            crate::marching::FluidRenderMode::RayMarching => {
-                // Ray marching is handled by existing systems
-            }
-        }
-    }
-}
