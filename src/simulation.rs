@@ -17,7 +17,6 @@ use bevy::prelude::{States, Reflect};
 use bevy::time::Timer;
 use bevy::time::TimerMode;
 use crate::presets::{PresetManager3D, load_presets_system};
-use crate::marching::MarchingGridSettings;
 use crate::marching::RayMarchPlugin;
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
@@ -84,7 +83,6 @@ impl Plugin for SimulationPlugin {
            .init_resource::<SpatialHashResource>()
            .init_resource::<ColorMapParams>()
            .init_resource::<DrawLakeMode>()
-           .init_resource::<MarchingGridSettings>()
             .init_resource::<Fluid3DParams>()
             .init_resource::<SpawnRegion3D>()
             .init_resource::<SpatialHashResource3D>()
@@ -92,7 +90,6 @@ impl Plugin for SimulationPlugin {
             .init_resource::<ToggleCooldown>()
             .init_resource::<PresetManager3D>()
             .init_resource::<GroundDeformationTimer>()
-            .init_resource::<crate::marching::MarchingGridSettings>()
             .init_resource::<crate::marching::RayMarchingSettings>()
             .add_plugins(crate::marching::RayMarchPlugin)
             .add_systems(Startup, load_presets_system)

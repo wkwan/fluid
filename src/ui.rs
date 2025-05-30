@@ -4,7 +4,7 @@ use crate::simulation::{DrawLakeMode, FluidParams, MouseInteraction, ColorMapPar
 use crate::simulation3d::{Fluid3DParams, MouseInteraction3D};
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::simulation::SimulationDimension;
-use crate::marching::{MarchingGridSettings, RayMarchingSettings, FluidRenderSettings, FluidRenderMode};
+use crate::marching::{RayMarchingSettings, FluidRenderSettings, FluidRenderMode};
 use crate::constants::{MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 
 pub struct UiPlugin;
@@ -28,7 +28,6 @@ fn draw_ui(
     sim_dim: Res<State<SimulationDimension>>,
     mut next_sim_dim: ResMut<NextState<SimulationDimension>>,
     mut reset_ev: EventWriter<crate::simulation::ResetSim>,
-    mut marching_settings: ResMut<MarchingGridSettings>,
     mut raymarching_settings: ResMut<RayMarchingSettings>,
     mut fluid_render_settings: ResMut<FluidRenderSettings>,
 ) {

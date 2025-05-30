@@ -101,44 +101,14 @@ impl Default for RayMarchingSettings {
     }
 }
 
-// Resource to store grid settings
-#[derive(Resource)]
-pub struct MarchingGridSettings {
-    pub grid_resolution: usize,
-    pub iso_threshold: f32,
-    pub grid_bounds_min: Vec3,
-    pub grid_bounds_max: Vec3,
-    pub smoothing_radius: f32,
-    pub particle_mass: f32,
-    pub update_frequency: f32, // How often to update the mesh (in seconds)
-    pub last_update: f32,      // Time since last update
-}
-
-impl Default for MarchingGridSettings {
-    fn default() -> Self {
-        Self {
-            grid_resolution: 64,  // Higher resolution for smoother surface
-            iso_threshold: 0.15,  // Lower threshold for smoother surface
-            grid_bounds_min: Vec3::new(-150.0, -350.0, -150.0),  // Cover entire simulation space
-            grid_bounds_max: Vec3::new(150.0, 200.0, 150.0),
-            smoothing_radius: 35.0,  // Larger radius for smoother density field
-            particle_mass: 3.5,      // Higher mass for stronger density field
-            update_frequency: 0.15,  // Reasonable update rate
-            last_update: 0.0,
-        }
-    }
-}
-
 // Main system for rendering the free surface
 pub fn render_free_surface_system(
     sim_dim: Res<State<SimulationDimension>>,
     render_settings: Res<FluidRenderSettings>,
-    mut grid_settings: ResMut<MarchingGridSettings>,
     raymarching_settings: Res<RayMarchingSettings>,
     particles_3d: Query<&Transform, (With<Particle3D>, Without<Particle>)>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials_3d: ResMut<Assets<StandardMaterial>>,
     mut raymarch_materials: ResMut<Assets<RayMarchMaterial>>,
     mut images: ResMut<Assets<Image>>,
     existing_mesh: Query<Entity, With<FreeSurfaceMesh>>,
@@ -213,64 +183,6 @@ fn cleanup_all_render_entities(
     for entity in existing_screen_space.iter() {
         commands.entity(entity).despawn();
     }
-}
-
-// Simplified density kernel function for better surface detection
-fn poly6_kernel(distance: f32, smoothing_radius: f32) -> f32 {
-    if distance >= smoothing_radius {
-        return 0.0;
-    }
-    
-    let normalized_distance = distance / smoothing_radius;
-    let falloff = 1.0 - normalized_distance;
-    falloff * falloff // Quadratic falloff
-}
-
-// Generate density field from particles using SPH kernel
-fn generate_density_field(
-    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
-    grid_settings: &MarchingGridSettings,
-) -> Option<Vec<f32>> {
-    let particle_count = particles.iter().count();
-    if particle_count == 0 {
-        return None;
-    }
-    
-    let resolution = grid_settings.grid_resolution;
-    let bounds_min = grid_settings.grid_bounds_min;
-    let bounds_max = grid_settings.grid_bounds_max;
-    let grid_size = bounds_max - bounds_min;
-    let cell_size = grid_size / resolution as f32;
-    
-    let mut density_field = vec![0.0f32; resolution * resolution * resolution];
-    
-    // Collect particle positions for faster access
-    let particle_positions: Vec<Vec3> = particles.iter().map(|t| t.translation).collect();
-    
-    // Calculate density at each grid point using SPH kernel
-    for i in 0..resolution {
-        for j in 0..resolution {
-            for k in 0..resolution {
-                let grid_pos = bounds_min + Vec3::new(
-                    i as f32 * cell_size.x,
-                    j as f32 * cell_size.y,
-                    k as f32 * cell_size.z,
-                );
-                
-                let mut density = 0.0;
-                for &particle_pos in &particle_positions {
-                    let distance = (grid_pos - particle_pos).length();
-                    let kernel_value = poly6_kernel(distance, grid_settings.smoothing_radius);
-                    density += grid_settings.particle_mass * kernel_value;
-                }
-                
-                let index = i * resolution * resolution + j * resolution + k;
-                density_field[index] = density;
-            }
-        }
-    }
-    
-    Some(density_field)
 }
 
 // Plugin for ray marching functionality
