@@ -224,13 +224,6 @@ fn draw_ui(
                                         ).clicked() {
                                             fluid_render_settings.render_mode = FluidRenderMode::RayMarching;
                                         }
-                                        
-                                        if ui.selectable_label(
-                                            fluid_render_settings.render_mode == FluidRenderMode::MarchingCubes, 
-                                            "Marching Cubes"
-                                        ).clicked() {
-                                            fluid_render_settings.render_mode = FluidRenderMode::MarchingCubes;
-                                        }
                                     });
                                     
                                     ui.separator();
@@ -341,25 +334,6 @@ fn draw_ui(
                                                     raymarching_settings.density_multiplier = 1.0;
                                                     raymarching_settings.absorption = 0.5;
                                                 }
-                                            });
-                                        }
-                                        FluidRenderMode::MarchingCubes => {
-                                            // Marching cubes settings
-                                            ui.label("Marching Cubes Settings:");
-                                            
-                                            ui.horizontal(|ui| {
-                                                ui.label("Grid Resolution:");
-                                                ui.add(egui::Slider::new(&mut marching_settings.grid_resolution, 32..=128).step_by(8.0));
-                                            });
-                                            
-                                            ui.horizontal(|ui| {
-                                                ui.label("ISO Threshold:");
-                                                ui.add(egui::Slider::new(&mut marching_settings.iso_threshold, 0.1..=2.0).step_by(0.1));
-                                            });
-                                            
-                                            ui.horizontal(|ui| {
-                                                ui.label("Update Frequency:");
-                                                ui.add(egui::Slider::new(&mut marching_settings.update_frequency, 0.05..=1.0).step_by(0.05));
                                             });
                                         }
                                     }
@@ -482,16 +456,6 @@ fn draw_ui(
                         raymarching_settings.ior_air = 1.0;
                         raymarching_settings.extinction_coefficient = Vec3::new(0.0, 0.0, 0.0);
                         raymarching_settings.surface_smoothness = 0.5;
-                        
-                        // Reset marching cubes settings to defaults
-                        marching_settings.grid_resolution = 64;
-                        marching_settings.iso_threshold = 0.15;
-                        marching_settings.grid_bounds_min = Vec3::new(-150.0, -350.0, -150.0);
-                        marching_settings.grid_bounds_max = Vec3::new(150.0, 200.0, 150.0);
-                        marching_settings.smoothing_radius = 35.0;
-                        marching_settings.particle_mass = 3.5;
-                        marching_settings.update_frequency = 0.15;
-                        marching_settings.last_update = 0.0;
                         
                         reset_ev.write(crate::simulation::ResetSim);
                     }

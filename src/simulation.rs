@@ -1247,9 +1247,6 @@ fn render_free_surface_simple(
             crate::marching::FluidRenderMode::RayMarching => {
                 // Ray marching is handled by existing systems
             }
-            crate::marching::FluidRenderMode::MarchingCubes => {
-                // Marching cubes is handled by existing systems
-            }
         }
     }
 }
