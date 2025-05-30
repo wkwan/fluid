@@ -15,6 +15,13 @@ pub struct OrbitCamera {
 #[derive(Component)]
 pub struct Camera2DMarker;
 
+/// Helper function to despawn entities from a query
+fn despawn_entities<T: Component>(commands: &mut Commands, query: &Query<Entity, With<T>>) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+}
+
 /// Spawn a 3-D orbit camera when entering 3-D mode (if none exists).
 pub fn spawn_orbit_camera(
     mut commands: Commands,
@@ -51,9 +58,7 @@ pub fn despawn_orbit_camera(
     let count = query.iter().count();
     if count > 0 {
         info!("Cleaning up {} orbit cameras in 2D mode", count);
-        for entity in query.iter() {
-            commands.entity(entity).despawn();
-        }
+        despawn_entities(&mut commands, &query);
     }
 }
 
@@ -177,8 +182,6 @@ pub fn despawn_2d_camera(
     let count = existing.iter().count();
     if count > 0 {
         info!("Cleaning up {} 2D cameras in 3D mode", count);
-        for entity in existing.iter() {
-            commands.entity(entity).despawn();
-        }
+        despawn_entities(&mut commands, &existing);
     }
 } 

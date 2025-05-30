@@ -70,4 +70,12 @@ pub const VELOCITY_DAMPING: f32 = 0.98;
 pub const ANGULAR_DAMPING: f32 = 0.95;
 
 /// Horizontal velocity damping for ground interactions
-pub const HORIZONTAL_DAMPING: f32 = 0.9; 
+pub const HORIZONTAL_DAMPING: f32 = 0.9;
+
+// ======================== RENDERING CONSTANTS ========================
+
+/// Ray marching volume bounds minimum
+pub const RAY_MARCH_BOUNDS_MIN: [f32; 3] = [-150.0, -350.0, -150.0];
+
+/// Ray marching volume bounds maximum
+pub const RAY_MARCH_BOUNDS_MAX: [f32; 3] = [150.0, 200.0, 150.0]; 

@@ -44,6 +44,13 @@ fn setup_screen_space_resources(
 #[derive(Resource)]
 pub struct CircleMesh(pub Handle<Mesh>);
 
+/// Helper function to despawn entities from a query
+fn despawn_entities<T: Component>(commands: &mut Commands, query: &Query<Entity, With<T>>) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+}
+
 // Main rendering function called from marching.rs
 pub fn render_screen_space_fluid(
     particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
@@ -56,9 +63,7 @@ pub fn render_screen_space_fluid(
     camera_3d: &Query<&Transform, With<Camera3d>>,
 ) {
     // Remove existing screen space entities
-    for entity in existing_screen_space.iter() {
-        commands.entity(entity).despawn();
-    }
+    despawn_entities(commands, existing_screen_space);
     
     let particle_count = particles.iter().count();
     if particle_count == 0 {

@@ -11,6 +11,14 @@ use crate::simulation3d::Particle3D;
 use crate::simulation::Particle;
 use crate::simulation::SimulationDimension;
 use crate::screen_space_fluid::ScreenSpaceFluid;
+use crate::constants::{RAY_MARCH_BOUNDS_MIN, RAY_MARCH_BOUNDS_MAX};
+
+/// Helper function to despawn entities from a query
+fn despawn_entities<T: Component>(commands: &mut Commands, query: &Query<Entity, With<T>>) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+}
 
 // Fluid rendering mode selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
@@ -122,22 +130,14 @@ pub fn render_free_surface_system(
     match render_settings.render_mode {
         FluidRenderMode::ScreenSpace => {
             // Clean up other modes
-            for entity in existing_mesh.iter() {
-                commands.entity(entity).despawn();
-            }
-            for entity in existing_volume.iter() {
-                commands.entity(entity).despawn();
-            }
+            despawn_entities(&mut commands, &existing_mesh);
+            despawn_entities(&mut commands, &existing_volume);
             // Screen space rendering is handled by its own system
         }
         FluidRenderMode::RayMarching => {
             // Clean up other modes
-            for entity in existing_mesh.iter() {
-                commands.entity(entity).despawn();
-            }
-            for entity in existing_screen_space.iter() {
-                commands.entity(entity).despawn();
-            }
+            despawn_entities(&mut commands, &existing_mesh);
+            despawn_entities(&mut commands, &existing_screen_space);
             
             // Call existing ray marching implementation
             render_ray_march_volume(
@@ -162,15 +162,9 @@ fn cleanup_all_render_entities(
     existing_volume: &Query<Entity, With<RayMarchVolume>>,
     existing_screen_space: &Query<Entity, With<ScreenSpaceFluid>>,
 ) {
-    for entity in existing_mesh.iter() {
-        commands.entity(entity).despawn();
-    }
-    for entity in existing_volume.iter() {
-        commands.entity(entity).despawn();
-    }
-    for entity in existing_screen_space.iter() {
-        commands.entity(entity).despawn();
-    }
+    despawn_entities(commands, existing_mesh);
+    despawn_entities(commands, existing_volume);
+    despawn_entities(commands, existing_screen_space);
 }
 
 // System to clean up free surface entities when show_free_surface is disabled
@@ -258,8 +252,8 @@ impl Default for RayMarchMaterial {
     fn default() -> Self {
         Self {
             camera_pos: Vec3::ZERO,
-            bounds_min: Vec3::new(-150.0, -350.0, -150.0),
-            bounds_max: Vec3::new(150.0, 200.0, 150.0),
+            bounds_min: Vec3::from(RAY_MARCH_BOUNDS_MIN),
+            bounds_max: Vec3::from(RAY_MARCH_BOUNDS_MAX),
             step_size: 5.0,
             density_multiplier: 10.0,
             density_threshold: 0.00001,
@@ -360,16 +354,12 @@ pub fn render_ray_march_volume(
     match *sim_dim.get() {
         SimulationDimension::Dim2 => {
             // Remove existing volume in 2D mode
-            for entity in existing_volume.iter() {
-                commands.entity(entity).despawn();
-            }
+            despawn_entities(&mut commands, &existing_volume);
         }
         SimulationDimension::Dim3 => {
             if !raymarching_settings.enabled {
                 // Remove existing volume if raymarching is disabled
-                for entity in existing_volume.iter() {
-                    commands.entity(entity).despawn();
-                }
+                despawn_entities(&mut commands, &existing_volume);
                 return;
             }
 
@@ -378,9 +368,7 @@ pub fn render_ray_march_volume(
             
             if particle_count < 10 {
                 // Remove existing volume if not enough particles
-                for entity in existing_volume.iter() {
-                    commands.entity(entity).despawn();
-                }
+                despawn_entities(&mut commands, &existing_volume);
                 return;
             }
 
@@ -399,9 +387,7 @@ pub fn render_ray_march_volume(
                 spawn_ray_march_volume(&mut commands, &mut meshes, &mut materials, density_texture, max_density, &raymarching_settings, &existing_volume);
             } else {
                 // Remove existing volume if no density texture could be generated
-                for entity in existing_volume.iter() {
-                    commands.entity(entity).despawn();
-                }
+                despawn_entities(&mut commands, &existing_volume);
             }
         }
     }
@@ -413,8 +399,8 @@ fn generate_density_texture(
     images: &mut ResMut<Assets<Image>>,
 ) -> Option<(Handle<Image>, f32)> {
     let resolution = 96u32; // Increased to 96 for even smoother surfaces
-    let bounds_min = Vec3::new(-150.0, -350.0, -150.0);
-    let bounds_max = Vec3::new(150.0, 200.0, 150.0);
+    let bounds_min = Vec3::from(RAY_MARCH_BOUNDS_MIN);
+    let bounds_max = Vec3::from(RAY_MARCH_BOUNDS_MAX);
     let bounds_size = bounds_max - bounds_min;
     let cell_size = bounds_size / resolution as f32;
     let smoothing_radius = 50.0; // Increased for even smoother blending
@@ -578,9 +564,7 @@ fn spawn_ray_march_volume(
     existing_volume: &Query<Entity, With<RayMarchVolume>>,
 ) {
     // Remove existing volume
-    for entity in existing_volume.iter() {
-        commands.entity(entity).despawn();
-    }
+    despawn_entities(commands, existing_volume);
 
     // Only proceed if we have valid density data
     if max_density < 0.001 {
@@ -588,8 +572,8 @@ fn spawn_ray_march_volume(
     }
 
     // Create a cube that covers the simulation bounds
-    let bounds_min = Vec3::new(-150.0, -350.0, -150.0);
-    let bounds_max = Vec3::new(150.0, 200.0, 150.0);
+    let bounds_min = Vec3::from(RAY_MARCH_BOUNDS_MIN);
+    let bounds_max = Vec3::from(RAY_MARCH_BOUNDS_MAX);
     let bounds_size = bounds_max - bounds_min;
     let mesh_handle = meshes.add(Cuboid::new(bounds_size.x, bounds_size.y, bounds_size.z));
 

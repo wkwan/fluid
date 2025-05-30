@@ -3,7 +3,7 @@ use bevy::math::primitives::Sphere;
 use bevy::pbr::MeshMaterial3d;
 use bevy::time::{Timer, TimerMode};
 use crate::simulation::SimulationDimension;
-use crate::spatial_hash3d::SpatialHashResource3D;
+use crate::spatial_hash3d::{SpatialHashResource3D};
 use rand;
 use serde::{Serialize, Deserialize};
 use crate::constants::{
@@ -123,6 +123,18 @@ impl Default for SpawnRegion3D {
             active: true,
         }
     }
+}
+
+/// Helper function to get cursor world ray from orbit camera
+fn get_cursor_world_ray(
+    windows: &Query<&Window>,
+    camera_q: &Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+) -> Option<(Vec2, Ray3d)> {
+    let window = windows.iter().next()?;
+    let cursor_position = window.cursor_position()?;
+    let (camera, camera_transform) = camera_q.single().ok()?;
+    let ray = camera.viewport_to_world(camera_transform, cursor_position).ok()?;
+    Some((cursor_position, ray))
 }
 
 // ======================== SETUP ============================
@@ -275,48 +287,41 @@ pub fn handle_mouse_input_3d(
     }
 
     // Handle mouse interaction
-    if let Some(window) = windows.iter().next() {
-        if let Some(cursor_position) = window.cursor_position() {
-            if let Ok((camera, camera_transform)) = camera_q.single() {
-                // Convert screen position to world ray
-                if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
-                    // Find the closest particle to the ray to determine interaction depth
-                    let mut closest_distance = f32::INFINITY;
-                    let mut best_position = Vec3::ZERO;
-                    
-                    // Check all particles to find the one closest to the ray
-                    for particle_transform in particles.iter() {
-                        let particle_pos = particle_transform.translation;
-                        
-                        // Calculate distance from particle to ray
-                        let to_particle = particle_pos - ray.origin;
-                        let projection_length = to_particle.dot(*ray.direction);
-                        let closest_point_on_ray = ray.origin + *ray.direction * projection_length;
-                        let distance_to_ray = (particle_pos - closest_point_on_ray).length();
-                        
-                        // If this particle is closer to the ray and within reasonable distance
-                        if distance_to_ray < closest_distance && distance_to_ray < 200.0 {
-                            closest_distance = distance_to_ray;
-                            best_position = closest_point_on_ray;
-                        }
-                    }
-                    
-                    // If we found a good particle, use that position
-                    // Otherwise, fall back to projecting to the middle of the spawn region
-                    if closest_distance < 200.0 {
-                        mouse_interaction_3d.position = best_position;
-                    } else {
-                        // Fallback: project to Y=150 (middle of spawn region)
-                        let interaction_plane_y = 150.0;
-                        let t = if ray.direction.y.abs() > 0.001 {
-                            (interaction_plane_y - ray.origin.y) / ray.direction.y
-                        } else {
-                            100.0
-                        };
-                        mouse_interaction_3d.position = ray.origin + *ray.direction * t;
-                    }
-                }
+    if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
+        // Find the closest particle to the ray to determine interaction depth
+        let mut closest_distance = f32::INFINITY;
+        let mut best_position = Vec3::ZERO;
+        
+        // Check all particles to find the one closest to the ray
+        for particle_transform in particles.iter() {
+            let particle_pos = particle_transform.translation;
+            
+            // Calculate distance from particle to ray
+            let to_particle = particle_pos - ray.origin;
+            let projection_length = to_particle.dot(*ray.direction);
+            let closest_point_on_ray = ray.origin + *ray.direction * projection_length;
+            let distance_to_ray = (particle_pos - closest_point_on_ray).length();
+            
+            // If this particle is closer to the ray and within reasonable distance
+            if distance_to_ray < closest_distance && distance_to_ray < 200.0 {
+                closest_distance = distance_to_ray;
+                best_position = closest_point_on_ray;
             }
+        }
+        
+        // If we found a good particle, use that position
+        // Otherwise, fall back to projecting to the middle of the spawn region
+        if closest_distance < 200.0 {
+            mouse_interaction_3d.position = best_position;
+        } else {
+            // Fallback: project to Y=150 (middle of spawn region)
+            let interaction_plane_y = 150.0;
+            let t = if ray.direction.y.abs() > 0.001 {
+                (interaction_plane_y - ray.origin.y) / ray.direction.y
+            } else {
+                100.0
+            };
+            mouse_interaction_3d.position = ray.origin + *ray.direction * t;
         }
     }
 
@@ -839,26 +844,19 @@ pub fn spawn_duck_at_cursor(
 
     for _ in spawn_duck_ev.read() {
         // Get cursor position and convert to world space
-        if let Some(window) = windows.iter().next() {
-            if let Some(cursor_position) = window.cursor_position() {
-                if let Ok((camera, camera_transform)) = camera_q.single() {
-                    // Convert screen position to world ray
-                    if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
-                        // Project ray to a reasonable distance (middle of spawn region)
-                        let spawn_distance = 150.0; // Distance from camera to spawn duck
-                        let spawn_position = ray.origin + *ray.direction * spawn_distance;
-                        
-                        // Calculate initial velocity based on camera direction
-                        let camera_forward = camera_transform.forward();
-                        let initial_velocity = camera_forward.as_vec3() * 200.0; // Launch speed
-                        
-                        // Load rubber duck model
-                        spawn_rubber_duck_model(&mut commands, &mut meshes, &mut materials, &asset_server, spawn_position, initial_velocity);
-                        
-                        info!("Spawned rubber duck at position: {:?} with velocity: {:?}", spawn_position, initial_velocity);
-                    }
-                }
-            }
+        if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
+            // Project ray to a reasonable distance (middle of spawn region)
+            let spawn_distance = 150.0; // Distance from camera to spawn duck
+            let spawn_position = ray.origin + *ray.direction * spawn_distance;
+            
+            // Calculate initial velocity based on camera direction
+            let camera_forward = ray.direction.normalize();
+            let initial_velocity = camera_forward * 200.0; // Launch speed
+            
+            // Load rubber duck model
+            spawn_rubber_duck_model(&mut commands, &mut meshes, &mut materials, &asset_server, spawn_position, initial_velocity);
+            
+            info!("Spawned rubber duck at position: {:?} with velocity: {:?}", spawn_position, initial_velocity);
         }
     }
 }
@@ -1239,31 +1237,25 @@ pub fn handle_ground_deformation(
         deformation_timer.timer.reset();
     }
     
-    if let Some(window) = windows.iter().next() {
-        if let Some(cursor_position) = window.cursor_position() {
-            if let Ok((camera, camera_transform)) = camera_q.single() {
-                if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
-                    // Check if ray intersects with ground plane
-                    let ground_y = BOUNDARY_MIN.y;
-                    
-                    if ray.direction.y.abs() > 0.001 {
-                        let t = (ground_y - ray.origin.y) / ray.direction.y;
-                        if t > 0.0 {
-                            let intersection_point = ray.origin + ray.direction * t;
-                            
-                            // Deform the ground at this point
-                            if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
-                                deform_ground_at_point(
-                                    &mut deformable_ground,
-                                    &mut meshes,
-                                    mesh_handle,
-                                    intersection_point,
-                                    ground_transform,
-                                    deform_up,
-                                );
-                            }
-                        }
-                    }
+    if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
+        // Check if ray intersects with ground plane
+        let ground_y = BOUNDARY_MIN.y;
+        
+        if ray.direction.y.abs() > 0.001 {
+            let t = (ground_y - ray.origin.y) / ray.direction.y;
+            if t > 0.0 {
+                let intersection_point = ray.origin + ray.direction * t;
+                
+                // Deform the ground at this point
+                if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
+                    deform_ground_at_point(
+                        &mut deformable_ground,
+                        &mut meshes,
+                        mesh_handle,
+                        intersection_point,
+                        ground_transform,
+                        deform_up,
+                    );
                 }
             }
         }
