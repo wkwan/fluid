@@ -1,13 +1,4 @@
-use bevy::{
-    prelude::*,
-    render::{
-        mesh::{Indices, VertexAttributeValues},
-        render_asset::RenderAssetUsages,
-        render_resource::{
-            AsBindGroup, PrimitiveTopology, ShaderRef, ShaderType,
-        },
-    },
-};
+use bevy::prelude::*;
 use crate::simulation3d::Particle3D;
 use crate::simulation::Particle;
 
@@ -30,14 +21,12 @@ pub struct ScreenSpaceFluidMesh;
 #[derive(Resource)]
 pub struct ScreenSpaceFluidSettings {
     pub particle_scale: f32,
-    pub depth_offset: f32,
 }
 
 impl Default for ScreenSpaceFluidSettings {
     fn default() -> Self {
         Self {
             particle_scale: 5.0,  // Increased for better visibility
-            depth_offset: 0.0,
         }
     }
 }

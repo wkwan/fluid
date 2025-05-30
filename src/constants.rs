@@ -4,7 +4,7 @@
 /// Particle radius for collision detection and minimum separation
 pub const PARTICLE_RADIUS: f32 = 2.5;
 
-/// GPU particle radius (used in shaders and GPU calculations)
+/// GPU particle radius for rendering (can be different from collision radius)
 pub const GPU_PARTICLE_RADIUS: f32 = 5.0;
 
 /// Boundary dampening factor for wall collisions
@@ -26,12 +26,6 @@ pub const BOUNDARY_3D_MAX: [f32; 3] = [100.0, 100.0, 100.0];
 /// Y threshold below which 3D particles are recycled
 pub const KILL_Y_THRESHOLD_3D: f32 = -250.0;
 
-// ======================== SPATIAL HASH CONSTANTS ========================
-
-/// Hash constants for spatial hashing
-pub const HASH_K1: u32 = 15823;
-pub const HASH_K2: u32 = 9737333;
-
 // ======================== CAMERA CONSTANTS ========================
 
 /// Camera zoom limits
@@ -45,7 +39,7 @@ pub const RESET_DISTANCE: f32 = 400.0;
 
 // ======================== SIMULATION CONSTANTS ========================
 
-/// Maximum velocity for velocity-based coloring and clamping
+/// Maximum velocity for normalization in rendering
 pub const MAX_VELOCITY: f32 = 700.0;
 
 /// Maximum angular velocity for 3D objects (radians per second)
@@ -53,9 +47,6 @@ pub const MAX_ANGULAR_VELOCITY: f32 = 3.0;
 
 /// Duck size relative to particle radius
 pub const DUCK_SIZE: f32 = PARTICLE_RADIUS * 5.0;
-
-/// Frequency at which particles are reordered for cache locality
-pub const REORDERING_FREQUENCY: u32 = 100;
 
 // ======================== MOUSE INTERACTION CONSTANTS ========================
 

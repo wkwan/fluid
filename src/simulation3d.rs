@@ -1,16 +1,15 @@
 use bevy::prelude::*;
-use bevy::math::primitives::{Sphere, Plane3d};
+use bevy::math::primitives::Sphere;
 use bevy::pbr::MeshMaterial3d;
 use bevy::time::{Timer, TimerMode};
-use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
-use rand::{self, Rng};
+use rand;
 use serde::{Serialize, Deserialize};
 use crate::constants::{
     PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_3D, BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, 
-    KILL_Y_THRESHOLD_3D, MAX_ANGULAR_VELOCITY, DUCK_SIZE, MAX_VELOCITY, RESTITUTION, 
-    FRICTION, VELOCITY_DAMPING, ANGULAR_DAMPING, HORIZONTAL_DAMPING
+    KILL_Y_THRESHOLD_3D, MAX_ANGULAR_VELOCITY, DUCK_SIZE, RESTITUTION, 
+    FRICTION, VELOCITY_DAMPING, ANGULAR_DAMPING, HORIZONTAL_DAMPING, MAX_VELOCITY
 };
 
 // 3D particle component
@@ -576,80 +575,6 @@ pub fn recompute_velocities_3d(
     }
 }
 
-pub fn apply_pressure_viscosity_3d(
-    mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
-    spatial_hash: Res<SpatialHashResource3D>,
-    params: Res<Fluid3DParams>,
-    sim_dim: Res<State<SimulationDimension>>,
-) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
-        return;
-    }
-
-    let smoothing_radius = params.smoothing_radius;
-    let smoothing_radius_squared = smoothing_radius * smoothing_radius;
-    let math = FluidMath3D::new(smoothing_radius);
-    let viscosity = params.viscosity_strength;
-
-    // Cache positions and store entities order
-    let mut positions: Vec<Vec3> = Vec::with_capacity(particles_q.iter().count());
-    let mut velocities: Vec<Vec3> = Vec::with_capacity(positions.capacity());
-    let mut entities: Vec<Entity> = Vec::with_capacity(positions.capacity());
-
-    for (e, t, p) in particles_q.iter() {
-        entities.push(e);
-        positions.push(t.translation);
-        velocities.push(p.velocity);
-    }
-
-    let count = positions.len();
-    let mut delta_vs = vec![Vec3::ZERO; count];
-
-    for i in 0..count {
-        let pos_i = positions[i];
-        let vel_i = velocities[i];
-        let entity_i = entities[i];
-        let mut pressure_force = Vec3::ZERO;
-        let mut viscosity_force = Vec3::ZERO;
-
-        // Get neighbors using spatial hash
-        let neighbors = spatial_hash.spatial_hash.get_neighbors(pos_i, smoothing_radius);
-        for &neighbor_entity in &neighbors {
-            if neighbor_entity == entity_i { continue; }
-            if let Ok((_, t_j, p_j)) = particles_q.get(neighbor_entity) {
-                let pos_j = t_j.translation;
-                let vel_j = p_j.velocity;
-                let r = pos_i - pos_j;
-                let dist = r.length();
-                if dist > 0.0 && dist < smoothing_radius {
-                    // Pressure force (spiky gradient)
-                    let dir = r / dist;
-                    let pressure_term = (p_j.pressure + p_j.pressure) * 0.5; // symmetric
-                    let near_pressure_term = (p_j.near_pressure + p_j.near_pressure) * 0.5; // symmetric
-                    let grad = math.spiky_pow3_derivative(dist, smoothing_radius);
-                    let near_grad = math.spiky_pow2_derivative(dist, smoothing_radius);
-                    pressure_force -= dir * (pressure_term * grad + near_pressure_term * near_grad);
-
-                    // Viscosity force (Laplacian)
-                    let lap = math.spiky_pow2(dist, smoothing_radius);
-                    viscosity_force += (vel_j - vel_i) * lap;
-                }
-            }
-        }
-        // Apply viscosity strength
-        viscosity_force *= viscosity;
-        // Accumulate
-        delta_vs[i] = pressure_force + viscosity_force;
-    }
-
-    // Write back velocity changes
-    for (i, entity) in entities.iter().enumerate() {
-        if let Ok((_, _, mut p)) = particles_q.get_mut(*entity) {
-            p.velocity += delta_vs[i];
-        }
-    }
-}
-
 pub fn integrate_positions_3d(
     time: Res<Time>,
     mut particles: Query<(&mut Transform, &mut Particle3D)>,
@@ -727,7 +652,7 @@ pub fn integrate_positions_3d(
         }
 
         // Handle particle-to-particle collisions
-        let neighbors = spatial_hash.spatial_hash.get_neighbors(pos, particle_diameter);
+        let _neighbors = spatial_hash.spatial_hash.get_neighbors(pos, particle_diameter);
         
         for &neighbor_pos in &positions {
             if (neighbor_pos - pos).length() < 0.001 {
@@ -799,9 +724,6 @@ pub fn update_particle_colors_3d(
     particles: Query<(&Particle3D, &MeshMaterial3d<StandardMaterial>)>,
     time: Res<Time>,
 ) {
-    // Adjusted maximum velocity for normalization to match actual simulation velocity values
-    const MAX_VELOCITY: f32 = 700.0;
-    
     // Debug info
     let mut total_magnitude = 0.0;
     let mut count = 0;
@@ -945,7 +867,7 @@ fn spawn_rubber_duck_model(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    asset_server: &Res<AssetServer>,
+    _asset_server: &Res<AssetServer>,
     position: Vec3,
     velocity: Vec3,
 ) {
@@ -1138,7 +1060,7 @@ pub fn handle_particle_duck_collisions(
                 let min_penetration = penetration_x.min(penetration_y).min(penetration_z);
                 
                 let mut normal = Vec3::ZERO;
-                let mut penetration = 0.0;
+                let penetration;
                 
                 if min_penetration == penetration_x {
                     normal.x = if diff.x > 0.0 { 1.0 } else { -1.0 };
@@ -1184,8 +1106,6 @@ pub fn handle_particle_duck_collisions(
 fn create_deformable_plane_mesh(size: f32, width_segments: u32, height_segments: u32) -> (Vec<Vec3>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    
-    let half_size = size * 0.5;
     
     // Generate vertices
     for y in 0..=height_segments {

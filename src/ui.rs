@@ -113,10 +113,6 @@ fn draw_ui(
                             }
                             ui.label("Hotkey: G");
                             
-                            if let Some(err) = &gpu_state.last_error {
-                                ui.colored_label(egui::Color32::RED, format!("GPU Error: {}", err));
-                            }
-                            
                             ui.label(format!("Avg Frame Time: {:.2} ms", perf_stats.avg_frame_time));
                             ui.label(format!("Max Velocity: {:.1}", perf_stats.max_velocity));
                             

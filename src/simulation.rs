@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, DiagnosticsStore};
-use crate::math::FluidMath;
 use crate::spatial_hash::SpatialHash;
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera, spawn_2d_camera, despawn_2d_camera};
@@ -8,8 +7,8 @@ use bevy::prelude::Camera3d;
 use crate::constants::{GRAVITY_2D, BOUNDARY_DAMPENING, PARTICLE_RADIUS, REST_DENSITY, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 use crate::simulation3d::{
     apply_external_forces_3d, predict_positions_3d, calculate_density_3d, double_density_relaxation_3d, 
-    recompute_velocities_3d, integrate_positions_3d, setup_3d_environment, spawn_particles_3d, update_spatial_hash_3d,
-    Fluid3DParams, Marker3D, Particle3D, SpawnRegion3D, recycle_particles_3d, MouseInteraction3D,
+    recompute_velocities_3d, integrate_positions_3d, update_spatial_hash_3d,
+    Fluid3DParams, SpawnRegion3D, recycle_particles_3d, MouseInteraction3D,
     handle_mouse_input_3d, update_mouse_indicator_3d, handle_ground_deformation, GroundDeformationTimer,
 };
 use crate::spatial_hash3d::SpatialHashResource3D;
@@ -17,7 +16,6 @@ use bevy::prelude::{States, Reflect};
 use bevy::time::Timer;
 use bevy::time::TimerMode;
 use crate::presets::{PresetManager3D, load_presets_system};
-use crate::marching::RayMarchPlugin;
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -792,193 +790,6 @@ fn update_spatial_hash(
     }
 }
 
-// System to reset particle properties when parameters change significantly
-// This ensures existing particles respond to parameter changes immediately
-fn reset_particle_properties_on_param_change(
-    fluid_params: Res<FluidParams>,
-    spatial_hash: Res<SpatialHashResource>,
-    mut particle_query: Query<&mut Particle>,
-) {
-    // Check if parameters have changed significantly
-    let current_cell_size = spatial_hash.spatial_hash.cell_size;
-    let new_radius = fluid_params.smoothing_radius;
-    
-    // If smoothing radius changed significantly, reset particle properties
-    if (new_radius - current_cell_size).abs() > 0.1 {
-        // Reset density and pressure values so they get recalculated with new parameters
-        for mut particle in particle_query.iter_mut() {
-            particle.density = 0.0;
-            particle.pressure = 0.0;
-            particle.near_density = 0.0;
-            particle.near_pressure = 0.0;
-        }
-    }
-}
-
-fn calculate_pressure_force(
-    fluid_params: Res<FluidParams>,
-    spatial_hash: Res<SpatialHashResource>,
-    time: Res<Time>,
-    mut particle_query: Query<(Entity, &Transform, &mut Particle)>,
-) {
-    let dt = time.delta_secs();
-    let smoothing_radius = fluid_params.smoothing_radius;
-    let math = FluidMath::new(smoothing_radius);
-    
-    // Cache positions and pressure values with actual entity IDs
-    let particle_data: Vec<(Entity, Vec2, f32, f32)> = particle_query
-        .iter()
-        .map(|(entity, transform, particle)| 
-            (entity, transform.translation.truncate(), particle.pressure, particle.near_pressure))
-        .collect();
-    
-    // Create lookup tables with actual entity IDs
-    let mut position_map = std::collections::HashMap::with_capacity(particle_data.len());
-    let mut pressure_map = std::collections::HashMap::with_capacity(particle_data.len());
-    
-    for &(entity, position, pressure, near_pressure) in &particle_data {
-        position_map.insert(entity, position);
-        pressure_map.insert(entity, (pressure, near_pressure));
-    }
-    
-    // Calculate pressure forces for each particle
-    let mut pressure_forces = std::collections::HashMap::with_capacity(particle_data.len());
-    
-    for &(entity_a, position_a, pressure_a, near_pressure_a) in &particle_data {
-        let neighbors = spatial_hash.spatial_hash.get_neighbors(position_a, smoothing_radius);
-        let mut total_force = Vec2::ZERO;
-        
-        for neighbor_entity in neighbors {
-            // Skip self
-            if neighbor_entity == entity_a {
-                continue;
-            }
-            
-            // Get neighbor data from our maps
-            if let (Some(&position_b), Some(&(pressure_b, near_pressure_b))) = 
-                (position_map.get(&neighbor_entity), pressure_map.get(&neighbor_entity)) {
-                
-                let offset = position_a - position_b;
-                let distance_squared = offset.length_squared();
-                
-                if distance_squared > 0.0 && distance_squared < smoothing_radius * smoothing_radius {
-                    let distance = distance_squared.sqrt();
-                    let direction = offset / distance;
-                    
-                    // Pressure force calculation based on both pressure values
-                    let shared_pressure = (pressure_a + pressure_b) * 0.5;
-                    let shared_near_pressure = (near_pressure_a + near_pressure_b) * 0.5;
-                    
-                    // Add extra repulsion force when particles get very close (prevents overlapping)
-                    let min_distance = PARTICLE_RADIUS * 2.0;
-                    let extra_repulsion = if distance < min_distance {
-                        let overlap_factor = (min_distance - distance) / min_distance;
-                        overlap_factor * overlap_factor * 1000.0 // Increased repulsion force
-                    } else {
-                        0.0
-                    };
-                    
-                    let pressure_force = direction * 
-                        (math.spiky_pow3_derivative(distance, smoothing_radius) * shared_pressure +
-                         math.spiky_pow2_derivative(distance, smoothing_radius) * shared_near_pressure +
-                         extra_repulsion);
-                    
-                    total_force += pressure_force;
-                }
-            }
-        }
-        
-        pressure_forces.insert(entity_a, total_force);
-    }
-    
-    // Apply the pressure forces
-    for (entity, _, mut particle) in particle_query.iter_mut() {
-        if let Some(&force) = pressure_forces.get(&entity) {
-            particle.velocity += force * dt;
-        }
-    }
-}
-
-fn calculate_viscosity(
-    fluid_params: Res<FluidParams>,
-    spatial_hash: Res<SpatialHashResource>,
-    time: Res<Time>,
-    mut particle_query: Query<(Entity, &Transform, &mut Particle)>,
-) {
-    let dt = time.delta_secs();
-    let smoothing_radius = fluid_params.smoothing_radius;
-    let viscosity_strength = fluid_params.viscosity_strength;
-    let math = FluidMath::new(smoothing_radius);
-    
-    // Cache positions and velocities with actual entity IDs
-    let particle_data: Vec<(Entity, Vec2, Vec2)> = particle_query
-        .iter()
-        .map(|(entity, transform, particle)| 
-            (entity, transform.translation.truncate(), particle.velocity))
-        .collect();
-    
-    // Create lookup tables with actual entity IDs
-    let mut position_map = std::collections::HashMap::with_capacity(particle_data.len());
-    let mut velocity_map = std::collections::HashMap::with_capacity(particle_data.len());
-    
-    for &(entity, position, velocity) in &particle_data {
-        position_map.insert(entity, position);
-        velocity_map.insert(entity, velocity);
-    }
-    
-    // Calculate viscosity forces for each particle
-    let mut velocity_changes = std::collections::HashMap::with_capacity(particle_data.len());
-    
-    for &(entity_a, position_a, velocity_a) in &particle_data {
-        let neighbors = spatial_hash.spatial_hash.get_neighbors(position_a, smoothing_radius);
-        let mut total_change = Vec2::ZERO;
-        
-        for neighbor_entity in neighbors {
-            // Skip self
-            if neighbor_entity == entity_a {
-                continue;
-            }
-            
-            // Get neighbor data from our maps
-            if let (Some(&position_b), Some(&velocity_b)) = 
-                (position_map.get(&neighbor_entity), velocity_map.get(&neighbor_entity)) {
-                
-                let offset = position_a - position_b;
-                let distance_squared = offset.length_squared();
-                
-                if distance_squared > 0.0 && distance_squared < smoothing_radius * smoothing_radius {
-                    let distance = distance_squared.sqrt();
-                    
-                    // Viscosity is based on the velocity difference
-                    let velocity_diff = velocity_b - velocity_a;
-                    let influence = math.spiky_pow3(distance, smoothing_radius) * viscosity_strength;
-                    total_change += velocity_diff * influence;
-                }
-            }
-        }
-        
-        velocity_changes.insert(entity_a, total_change);
-    }
-    
-    // Apply the viscosity forces
-    for (entity, _, mut particle) in particle_query.iter_mut() {
-        if let Some(&change) = velocity_changes.get(&entity) {
-            particle.velocity += change * dt;
-        }
-    }
-}
-
-fn update_positions(
-    time: Res<Time>,
-    mut query: Query<(&mut Transform, &Particle)>,
-) {
-    let dt = time.delta_secs();
-    
-    for (mut transform, particle) in query.iter_mut() {
-        transform.translation += Vec3::new(particle.velocity.x, particle.velocity.y, 0.0) * dt;
-    }
-}
-
 fn handle_collisions(
     fluid_params: Res<FluidParams>,
     mut query: Query<(&mut Transform, &mut Particle)>,
@@ -1121,7 +932,7 @@ fn handle_reset_sim(
     q_orbit: Query<Entity, With<crate::orbit_camera::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
     q_cam2d: Query<Entity, With<crate::orbit_camera::Camera2DMarker>>,
-    sim_dim: Res<State<SimulationDimension>>,
+    _sim_dim: Res<State<SimulationDimension>>,
     world: &World,
 ) {
     if ev.is_empty() {
@@ -1175,11 +986,6 @@ fn handle_reset_sim(
     }
     
     info!("Dimension transition cleanup complete");
-}
-
-// System to initialize ToggleCooldown with zero duration so it's ready
-fn init_toggle_cooldown(mut commands: Commands) {
-    commands.insert_resource(ToggleCooldown { timer: Timer::from_seconds(0.0, TimerMode::Once) });
 }
 
 // Hotkey to cycle 3D presets (P key)

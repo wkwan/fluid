@@ -1,14 +1,11 @@
 use bevy::prelude::*;
 use bevy::{
     render::{
-        mesh::{Indices, PrimitiveTopology},
         render_resource::{AsBindGroup, ShaderRef, Extent3d, TextureDimension, TextureFormat},
         render_asset::RenderAssetUsages,
     },
-    pbr::{MaterialPipeline, MaterialPipelineKey},
     reflect::TypePath,
-    render::mesh::MeshVertexBufferLayoutRef,
-    math::primitives::{Sphere, Cuboid},
+    math::primitives::Cuboid,
 };
 use crate::simulation3d::Particle3D;
 use crate::simulation::Particle;
@@ -42,15 +39,6 @@ impl Default for FluidRenderSettings {
 // Component to mark the free surface mesh entity
 #[derive(Component)]
 pub struct FreeSurfaceMesh;
-
-// Resource to store the density texture
-#[derive(Resource)]
-pub struct DensityTexture {
-    pub texture: Handle<Image>,
-    pub resolution: usize,
-    pub bounds_min: Vec3,
-    pub bounds_max: Vec3,
-}
 
 // Resource to store ray marching settings
 #[derive(Resource)]
@@ -108,9 +96,9 @@ pub fn render_free_surface_system(
     raymarching_settings: Res<RayMarchingSettings>,
     particles_3d: Query<&Transform, (With<Particle3D>, Without<Particle>)>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut raymarch_materials: ResMut<Assets<RayMarchMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    meshes: ResMut<Assets<Mesh>>,
+    raymarch_materials: ResMut<Assets<RayMarchMaterial>>,
+    images: ResMut<Assets<Image>>,
     existing_mesh: Query<Entity, With<FreeSurfaceMesh>>,
     existing_volume: Query<Entity, With<RayMarchVolume>>,
     existing_screen_space: Query<Entity, With<ScreenSpaceFluid>>,

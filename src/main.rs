@@ -12,9 +12,13 @@ mod simulation3d;
 mod orbit_camera;
 mod ui;
 mod constants;
-use fluid::spatial_hash3d;
+mod spatial_hash3d;
 mod presets;
 mod screen_space_fluid;
+mod reordering;
+mod gpu_fluid3d;
+mod gpu_render3d;
+mod fluid3d;
 
 use simulation::SimulationPlugin;
 use spawner::SpawnerPlugin;
