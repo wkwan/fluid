@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use crate::simulation::{Particle, FluidParams};
-
-/// The frequency at which we reorder particles for better cache locality
-const REORDERING_FREQUENCY: u32 = 100;
+use crate::constants::{REORDERING_FREQUENCY, HASH_K1, HASH_K2};
 
 /// Resource to track when particles were last reordered
 #[derive(Resource, Default)]
@@ -59,9 +57,7 @@ pub fn reorder_particles_system(
         let cell_y = (position.y / cell_size).floor() as i32;
         
         // Use the same hash function as the GPU shader for consistency
-        let hash_k1: u32 = 15823;
-        let hash_k2: u32 = 9737333;
-        let hash = (cell_x as u32 * hash_k1) ^ (cell_y as u32 * hash_k2);
+        let hash = (cell_x as u32 * HASH_K1) ^ (cell_y as u32 * HASH_K2);
         
         // Store hash and entity
         spatial_map.push((hash, entity));

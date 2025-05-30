@@ -5,6 +5,7 @@ use crate::simulation3d::{Fluid3DParams, MouseInteraction3D};
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::simulation::SimulationDimension;
 use crate::marching::{MarchingGridSettings, RayMarchingSettings, FluidRenderSettings, FluidRenderMode};
+use crate::constants::{MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 
 pub struct UiPlugin;
 
@@ -147,16 +148,16 @@ fn draw_ui(
                             
                             ui.horizontal(|ui| {
                                 if ui.button("1000").clicked() { 
-                                    mouse_interaction.strength = 1000.0;
-                                    mouse_interaction_3d.strength = 1000.0;
+                                    mouse_interaction.strength = MOUSE_STRENGTH_LOW;
+                                    mouse_interaction_3d.strength = MOUSE_STRENGTH_LOW;
                                 }
                                 if ui.button("2000").clicked() { 
-                                    mouse_interaction.strength = 2000.0;
-                                    mouse_interaction_3d.strength = 2000.0;
+                                    mouse_interaction.strength = MOUSE_STRENGTH_MEDIUM;
+                                    mouse_interaction_3d.strength = MOUSE_STRENGTH_MEDIUM;
                                 }
                                 if ui.button("3000").clicked() { 
-                                    mouse_interaction.strength = 3000.0;
-                                    mouse_interaction_3d.strength = 3000.0;
+                                    mouse_interaction.strength = MOUSE_STRENGTH_HIGH;
+                                    mouse_interaction_3d.strength = MOUSE_STRENGTH_HIGH;
                                 }
                             });
                             ui.label("Hotkeys: 1, 2, 3");

@@ -7,7 +7,11 @@ use crate::simulation::SimulationDimension;
 use crate::spatial_hash3d::SpatialHashResource3D;
 use rand::{self, Rng};
 use serde::{Serialize, Deserialize};
-use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_3D, BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, KILL_Y_THRESHOLD_3D};
+use crate::constants::{
+    PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_3D, BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, 
+    KILL_Y_THRESHOLD_3D, MAX_ANGULAR_VELOCITY, DUCK_SIZE, MAX_VELOCITY, RESTITUTION, 
+    FRICTION, VELOCITY_DAMPING, ANGULAR_DAMPING, HORIZONTAL_DAMPING
+};
 
 // 3D particle component
 #[derive(Component)]
@@ -78,9 +82,7 @@ impl Default for MouseInteraction3D {
 const GRAVITY_VEC3: Vec3 = Vec3::new(GRAVITY_3D[0], GRAVITY_3D[1], GRAVITY_3D[2]);
 const BOUNDARY_MIN: Vec3 = Vec3::new(BOUNDARY_3D_MIN[0], BOUNDARY_3D_MIN[1], BOUNDARY_3D_MIN[2]);
 const BOUNDARY_MAX: Vec3 = Vec3::new(BOUNDARY_3D_MAX[0], BOUNDARY_3D_MAX[1], BOUNDARY_3D_MAX[2]);
-const DUCK_SIZE: f32 = PARTICLE_RADIUS * 5.0; // 5x bigger than particles
 const KILL_Y_THRESHOLD: f32 = KILL_Y_THRESHOLD_3D;
-const MAX_ANGULAR_VELOCITY: f32 = 3.0; // Maximum angular velocity in radians per second
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Fluid3DParams {
@@ -367,7 +369,7 @@ pub fn apply_external_forces_3d(
                     particle.velocity += force;
                     
                     // Add some damping to prevent excessive velocities
-                    particle.velocity *= 0.98;
+                    particle.velocity *= VELOCITY_DAMPING;
                 }
             }
         }
@@ -713,8 +715,8 @@ pub fn integrate_positions_3d(
                 pos.y = ground_height + PARTICLE_RADIUS;
                 vel.y = -vel.y * collision_damping;
                 // Add some horizontal friction when hitting the ground
-                vel.x *= 0.9;
-                vel.z *= 0.9;
+                vel.x *= HORIZONTAL_DAMPING;
+                vel.z *= HORIZONTAL_DAMPING;
             }
         } else {
             // Fallback to flat ground collision if no deformable ground exists
@@ -749,8 +751,7 @@ pub fn integrate_positions_3d(
                 
                 // Only resolve if particles are moving towards each other
                 if velocity_along_normal < 0.0 {
-                    let restitution = 0.3; // Bounce factor
-                    let impulse = -(1.0 + restitution) * velocity_along_normal;
+                    let impulse = -(1.0 + RESTITUTION) * velocity_along_normal;
                     vel += separation_direction * impulse;
                 }
             }
@@ -1034,7 +1035,7 @@ pub fn update_duck_physics(
         transform.rotation = rotation_delta * transform.rotation;
         
         // Add angular damping (air resistance) - stronger damping for smoother motion
-        duck.angular_velocity *= 0.95;
+        duck.angular_velocity *= ANGULAR_DAMPING;
         
         // Handle boundary collisions
         let half_size = duck.size * 0.5;
@@ -1159,16 +1160,14 @@ pub fn handle_particle_duck_collisions(
                 
                 // Only resolve if objects are moving towards each other
                 if velocity_along_normal < 0.0 {
-                    let restitution = 0.3; // Bounce factor
-                    let impulse = -(1.0 + restitution) * velocity_along_normal;
+                    let impulse = -(1.0 + RESTITUTION) * velocity_along_normal;
                     
                     // Apply impulse to particle (duck is much heavier, so it doesn't move much)
                     particle.velocity += normal * impulse;
                     
                     // Add some friction
-                    let friction = 0.1;
                     let tangent_velocity = relative_velocity - normal * velocity_along_normal;
-                    particle.velocity -= tangent_velocity * friction;
+                    particle.velocity -= tangent_velocity * FRICTION;
                     
                     // Add gentle angular velocity to duck based on collision
                     let collision_point = particle_pos - duck_pos;

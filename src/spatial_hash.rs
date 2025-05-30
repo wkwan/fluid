@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
+use crate::constants::{HASH_K1, HASH_K2};
 
 pub struct SpatialHash {
     pub cell_size: f32,
@@ -133,10 +134,6 @@ impl SpatialHash {
         hash & self.table_size_mask // Faster than hash % table_size
     }
 }
-
-// Constants for hashing if needed for more complex implementations
-pub const HASH_K1: u32 = 15823;
-pub const HASH_K2: u32 = 9737333;
 
 // Hash cell coordinate to a single unsigned integer (for GPU implementation)
 #[inline]

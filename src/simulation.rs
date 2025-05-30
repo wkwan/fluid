@@ -5,7 +5,7 @@ use crate::spatial_hash::SpatialHash;
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera, spawn_2d_camera, despawn_2d_camera};
 use bevy::prelude::Camera3d;
-use crate::constants::{GRAVITY_2D, BOUNDARY_DAMPENING, PARTICLE_RADIUS, REST_DENSITY};
+use crate::constants::{GRAVITY_2D, BOUNDARY_DAMPENING, PARTICLE_RADIUS, REST_DENSITY, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 use crate::simulation3d::{
     apply_external_forces_3d, predict_positions_3d, calculate_density_3d, double_density_relaxation_3d, 
     recompute_velocities_3d, integrate_positions_3d, setup_3d_environment, spawn_particles_3d, update_spatial_hash_3d,
@@ -351,11 +351,11 @@ fn handle_input(
 
     // Toggle force strength with number keys
     if keys.just_pressed(KeyCode::Digit1) {
-        mouse_interaction.strength = 1000.0;
+        mouse_interaction.strength = MOUSE_STRENGTH_LOW;
     } else if keys.just_pressed(KeyCode::Digit2) {
-        mouse_interaction.strength = 2000.0;
+        mouse_interaction.strength = MOUSE_STRENGTH_MEDIUM;
     } else if keys.just_pressed(KeyCode::Digit3) {
-        mouse_interaction.strength = 3000.0;
+        mouse_interaction.strength = MOUSE_STRENGTH_HIGH;
     }
     
     // Toggle color mode with C key

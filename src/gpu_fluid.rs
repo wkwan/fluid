@@ -17,7 +17,7 @@ use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 
 use crate::simulation::{Particle, FluidParams, MouseInteraction};
-use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING};
+use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 
 pub struct GpuFluidPlugin;
 
@@ -389,11 +389,11 @@ fn handle_mouse_input(
 
     // Toggle force strength with number keys
     if keys.just_pressed(KeyCode::Digit1) {
-        mouse_interaction.strength = 1000.0;
+        mouse_interaction.strength = MOUSE_STRENGTH_LOW;
     } else if keys.just_pressed(KeyCode::Digit2) {
-        mouse_interaction.strength = 2000.0;
+        mouse_interaction.strength = MOUSE_STRENGTH_MEDIUM;
     } else if keys.just_pressed(KeyCode::Digit3) {
-        mouse_interaction.strength = 3000.0;
+        mouse_interaction.strength = MOUSE_STRENGTH_HIGH;
     }
     
     // Toggle GPU acceleration with G key

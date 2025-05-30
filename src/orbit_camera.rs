@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use crate::simulation::SimulationDimension;
+use crate::constants::{MIN_ZOOM, MAX_ZOOM, RESET_YAW, RESET_PITCH, RESET_DISTANCE};
 
 #[derive(Component, Default)]
 pub struct OrbitCamera {
@@ -13,13 +14,6 @@ pub struct OrbitCamera {
 // Marker component for 2D camera
 #[derive(Component)]
 pub struct Camera2DMarker;
-
-/// Constants for zoom limits computed from simulation bounds
-const MIN_ZOOM: f32 = 50.0;
-const MAX_ZOOM: f32 = 1000.0; // Upper zoom limit
-const RESET_YAW: f32 = 0.0;
-const RESET_PITCH: f32 = -20.0;
-const RESET_DISTANCE: f32 = 400.0;
 
 /// Spawn a 3-D orbit camera when entering 3-D mode (if none exists).
 pub fn spawn_orbit_camera(
@@ -36,9 +30,9 @@ pub fn spawn_orbit_camera(
         Transform::from_xyz(0.0, 200.0, 400.0).looking_at(Vec3::ZERO, Vec3::Y),
         GlobalTransform::default(),
         OrbitCamera {
-            yaw: 0.0,
-            pitch: -20.0,
-            distance: 400.0,
+            yaw: RESET_YAW,
+            pitch: RESET_PITCH,
+            distance: RESET_DISTANCE,
             center: Vec3::ZERO,
         },
     ));
