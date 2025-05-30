@@ -20,6 +20,7 @@ use simulation::SimulationPlugin;
 use spawner::SpawnerPlugin;
 use gpu_fluid::GpuFluidPlugin;
 use ui::UiPlugin;
+use screen_space_fluid::ScreenSpaceFluidPlugin;
 
 fn main() {
     App::new()
@@ -30,6 +31,7 @@ fn main() {
             SimulationPlugin,
             SpawnerPlugin,
             GpuFluidPlugin,
+            ScreenSpaceFluidPlugin,
             FrameTimeDiagnosticsPlugin::default(),
         ))
         .add_systems(Startup, setup)

@@ -147,7 +147,9 @@ impl Plugin for SimulationPlugin {
            .add_systems(Update, update_fps_display)
             .add_systems(Update, track_max_velocity)
             .add_systems(Update, handle_reset_sim)
-            .add_systems(Update, render_free_surface_wrapper)
+            .add_systems(Update, render_free_surface_simple
+                .run_if(in_state(SimulationDimension::Dim3))
+            )
             // Orbit camera (3D only)
             .add_systems(Update, (
                 spawn_orbit_camera,
@@ -1231,38 +1233,23 @@ fn update_spatial_hash_on_radius_change_3d(
     }
 }
 
-// Wrapper system to pass UI settings to marching system
-fn render_free_surface_wrapper(
-    fluid_render_settings: Res<crate::marching::FluidRenderSettings>,
-    sim_dim: Res<State<SimulationDimension>>,
-    grid_settings: ResMut<MarchingGridSettings>,
-    raymarching_settings: Res<crate::marching::RayMarchingSettings>,
-    particles_3d: Query<&Transform, (With<crate::simulation3d::Particle3D>, Without<Particle>)>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials_3d: ResMut<Assets<StandardMaterial>>,
-    mut raymarch_materials: ResMut<Assets<crate::marching::RayMarchMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    existing_mesh: Query<Entity, With<crate::marching::FreeSurfaceMesh>>,
-    existing_volume: Query<Entity, With<crate::marching::RayMarchVolume>>,
-    existing_screen_space: Query<Entity, With<crate::screen_space_fluid::ScreenSpaceFluid>>,
-    time: Res<Time>,
+// Simplified system that checks render mode and calls appropriate renderer
+fn render_free_surface_simple(
+    render_settings: Res<crate::marching::FluidRenderSettings>,
 ) {
-    // Call the actual rendering function
-    crate::marching::render_free_surface(
-        sim_dim,
-        fluid_render_settings,
-        grid_settings,
-        raymarching_settings,
-        particles_3d,
-        commands,
-        meshes,
-        materials_3d,
-        raymarch_materials,
-        images,
-        existing_mesh,
-        existing_volume,
-        existing_screen_space,
-        time,
-    );
+    // The actual rendering is handled by mode-specific systems
+    // This just tracks which mode is active for debugging
+    if render_settings.show_free_surface {
+        match render_settings.render_mode {
+            crate::marching::FluidRenderMode::ScreenSpace => {
+                // Screen space rendering is handled by render_screen_space_fluid_system
+            }
+            crate::marching::FluidRenderMode::RayMarching => {
+                // Ray marching is handled by existing systems
+            }
+            crate::marching::FluidRenderMode::MarchingCubes => {
+                // Marching cubes is handled by existing systems
+            }
+        }
+    }
 }
