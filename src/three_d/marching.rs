@@ -11,13 +11,7 @@ use crate::three_d::simulation::Particle3D;
 use crate::sim::Particle;
 use crate::sim::SimulationDimension;
 use crate::constants::{RAY_MARCH_BOUNDS_MIN, RAY_MARCH_BOUNDS_MAX};
-
-/// Helper function to despawn entities from a query
-fn despawn_entities<T: Component>(commands: &mut Commands, query: &Query<Entity, With<T>>) {
-    for entity in query.iter() {
-        commands.entity(entity).despawn();
-    }
-}
+use crate::utils::despawn_entities;
 
 // Component to mark the free surface mesh entity
 #[derive(Component)]

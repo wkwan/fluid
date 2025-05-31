@@ -5,10 +5,10 @@ use bevy_egui::EguiPlugin;
 mod two_d;
 mod three_d;
 
-mod cam;
 mod ui;
 mod constants;
 mod sim;
+mod utils;
 
 use sim::SimulationPlugin;
 use two_d::spawner::SpawnerPlugin;

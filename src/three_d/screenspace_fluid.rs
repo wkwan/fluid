@@ -4,6 +4,7 @@ use bevy::pbr::Material;
 use crate::three_d::simulation::Particle3D;
 use crate::sim::Particle;
 use crate::sim::SimulationDimension;
+use crate::utils::despawn_entities;
 
 pub struct ScreenSpaceFluidPlugin;
 
@@ -164,13 +165,6 @@ fn setup_screen_space_resources(
 
 #[derive(Resource)]
 pub struct CircleMesh(pub Handle<Mesh>);
-
-/// Helper function to despawn entities from a query
-fn despawn_entities<T: Component>(commands: &mut Commands, query: &Query<Entity, With<T>>) {
-    for entity in query.iter() {
-        commands.entity(entity).despawn();
-    }
-}
 
 // System to clean up screen space entities when disabled
 fn cleanup_screen_space_system(

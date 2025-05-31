@@ -128,7 +128,7 @@ impl Default for SpawnRegion3D {
 /// Helper function to get cursor world ray from orbit camera
 fn get_cursor_world_ray(
     windows: &Query<&Window>,
-    camera_q: &Query<(&Camera, &GlobalTransform), With<crate::cam::OrbitCamera>>,
+    camera_q: &Query<(&Camera, &GlobalTransform), With<crate::three_d::camera::OrbitCamera>>,
 ) -> Option<(Vec2, Ray3d)> {
     let window = windows.iter().next()?;
     let cursor_position = window.cursor_position()?;
@@ -276,7 +276,7 @@ pub fn spawn_particles_3d(
 pub fn handle_mouse_input_3d(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<crate::cam::OrbitCamera>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::three_d::camera::OrbitCamera>>,
     mut mouse_interaction_3d: ResMut<MouseInteraction3D>,
     sim_dim: Res<State<SimulationDimension>>,
     particles: Query<&Transform, With<Particle3D>>,
@@ -833,7 +833,7 @@ pub fn spawn_duck_at_cursor(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut spawn_duck_ev: EventReader<crate::sim::SpawnDuck>,
     windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<crate::cam::OrbitCamera>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::three_d::camera::OrbitCamera>>,
     sim_dim: Res<State<SimulationDimension>>,
     asset_server: Res<AssetServer>,
 ) {
@@ -1194,7 +1194,7 @@ impl Default for GroundDeformationTimer {
 pub fn handle_ground_deformation(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<crate::cam::OrbitCamera>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::three_d::camera::OrbitCamera>>,
     mut ground_query: Query<(&mut DeformableGround, &Mesh3d, &Transform), With<GroundPlane>>,
     mut meshes: ResMut<Assets<Mesh>>,
     draw_lake_mode: Res<crate::sim::DrawLakeMode>,

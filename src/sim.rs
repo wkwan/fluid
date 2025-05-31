@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, DiagnosticsStore};
 use crate::two_d::spatial_hash::SpatialHash;
 use crate::two_d::gpu_fluid::{GpuState, GpuPerformanceStats};
-use crate::cam::{spawn_orbit_camera, control_orbit_camera, spawn_2d_camera, despawn_2d_camera};
+use crate::two_d::camera::{spawn_2d_camera, despawn_2d_camera};
 use bevy::prelude::Camera3d;
 use crate::constants::{GRAVITY_2D, BOUNDARY_DAMPENING, PARTICLE_RADIUS, REST_DENSITY, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 use crate::three_d::simulation::{
@@ -16,6 +16,7 @@ use bevy::prelude::{States, Reflect};
 use bevy::time::Timer;
 use bevy::time::TimerMode;
 use crate::three_d::presets::{PresetManager3D, load_presets_system};
+use crate::three_d::camera::{spawn_orbit_camera, control_orbit_camera};
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -152,8 +153,8 @@ impl Plugin for SimulationPlugin {
                 spawn_2d_camera,
             ).run_if(in_state(SimulationDimension::Dim2)))
             // Camera cleanup when switching dimensions - run on state transitions
-            .add_systems(OnEnter(SimulationDimension::Dim2), crate::cam::despawn_orbit_camera)
-            .add_systems(OnEnter(SimulationDimension::Dim3), despawn_2d_camera)
+            .add_systems(OnEnter(SimulationDimension::Dim2), crate::three_d::camera::despawn_orbit_camera)
+            .add_systems(OnEnter(SimulationDimension::Dim3), crate::two_d::camera::despawn_2d_camera)
             // Preset hotkey
             .add_systems(Update, preset_hotkey_3d)
             // Handle duck spawning with spacebar in 3D mode
@@ -926,9 +927,9 @@ fn handle_reset_sim(
     q_particles3d: Query<Entity, With<crate::three_d::simulation::Particle3D>>,
     q_marker3d: Query<Entity, With<crate::three_d::simulation::Marker3D>>,
     q_ducks: Query<Entity, With<crate::three_d::simulation::RubberDuck>>,
-    q_orbit: Query<Entity, With<crate::cam::OrbitCamera>>,
+    q_orbit: Query<Entity, With<crate::three_d::camera::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
-    q_cam2d: Query<Entity, With<crate::cam::Camera2DMarker>>,
+    q_cam2d: Query<Entity, With<crate::two_d::camera::Camera2DMarker>>,
     _sim_dim: Res<State<SimulationDimension>>,
     world: &World,
 ) {
