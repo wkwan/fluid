@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use crate::simulation::SimulationDimension;
+use crate::constants::{MIN_ZOOM, MAX_ZOOM, RESET_YAW, RESET_PITCH, RESET_DISTANCE};
 
 #[derive(Component, Default)]
 pub struct OrbitCamera {
@@ -14,12 +15,12 @@ pub struct OrbitCamera {
 #[derive(Component)]
 pub struct Camera2DMarker;
 
-/// Constants for zoom limits computed from simulation bounds
-const MIN_ZOOM: f32 = 50.0;
-const MAX_ZOOM: f32 = 1000.0; // Upper zoom limit
-const RESET_YAW: f32 = 0.0;
-const RESET_PITCH: f32 = -20.0;
-const RESET_DISTANCE: f32 = 400.0;
+/// Helper function to despawn entities from a query
+fn despawn_entities<T: Component>(commands: &mut Commands, query: &Query<Entity, With<T>>) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+}
 
 /// Spawn a 3-D orbit camera when entering 3-D mode (if none exists).
 pub fn spawn_orbit_camera(
@@ -36,9 +37,9 @@ pub fn spawn_orbit_camera(
         Transform::from_xyz(0.0, 200.0, 400.0).looking_at(Vec3::ZERO, Vec3::Y),
         GlobalTransform::default(),
         OrbitCamera {
-            yaw: 0.0,
-            pitch: -20.0,
-            distance: 400.0,
+            yaw: RESET_YAW,
+            pitch: RESET_PITCH,
+            distance: RESET_DISTANCE,
             center: Vec3::ZERO,
         },
     ));
@@ -57,9 +58,7 @@ pub fn despawn_orbit_camera(
     let count = query.iter().count();
     if count > 0 {
         info!("Cleaning up {} orbit cameras in 2D mode", count);
-        for entity in query.iter() {
-            commands.entity(entity).despawn();
-        }
+        despawn_entities(&mut commands, &query);
     }
 }
 
@@ -183,8 +182,6 @@ pub fn despawn_2d_camera(
     let count = existing.iter().count();
     if count > 0 {
         info!("Cleaning up {} 2D cameras in 3D mode", count);
-        for entity in existing.iter() {
-            commands.entity(entity).despawn();
-        }
+        despawn_entities(&mut commands, &existing);
     }
 } 

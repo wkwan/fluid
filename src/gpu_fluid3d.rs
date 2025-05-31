@@ -15,7 +15,7 @@ use bevy::{
 use bytemuck::{Pod, Zeroable, cast_slice};
 use std::borrow::Cow;
 
-use crate::GpuState;
+use crate::gpu_fluid::GpuState;
 use crate::simulation3d::{Particle3D, Fluid3DParams};
 use crate::simulation::{MouseInteraction};
 use crate::constants::{BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, GPU_PARTICLE_RADIUS, GRAVITY_3D};
@@ -72,7 +72,6 @@ pub struct GpuParticles3D {
     pub near_densities: Vec<f32>,
     pub near_pressures: Vec<f32>,
     pub updated: bool,
-    pub particle_count: usize,
 }
 
 // GPU-compatible structures with padding for alignment
@@ -187,7 +186,6 @@ impl Default for FluidBindGroups3D {
 #[derive(Resource)]
 struct ExtractedFluidData3D {
     params: Fluid3DParams,
-    mouse: MouseInteraction,
     dt: f32,
     num_particles: usize,
     particle_positions: Vec<Vec3>,
@@ -202,7 +200,7 @@ struct ExtractedFluidData3D {
 fn extract_fluid_data_3d(
     mut commands: Commands,
     fluid_params: Extract<Res<Fluid3DParams>>,
-    mouse_interaction: Extract<Res<MouseInteraction>>,
+    _mouse_interaction: Extract<Res<MouseInteraction>>,
     time: Extract<Res<Time>>,
     particles: Extract<Query<(&Particle3D, &Transform)>>,
     gpu_state: Extract<Res<GpuState>>,
@@ -230,7 +228,6 @@ fn extract_fluid_data_3d(
 
     commands.insert_resource(ExtractedFluidData3D {
         params: fluid_params.clone(),
-        mouse: mouse_interaction.clone(),
         dt: time.delta_secs(),
         num_particles: particles.iter().len(),
         particle_positions: positions,
@@ -250,7 +247,7 @@ fn prepare_fluid_bind_groups_3d(
     render_queue: Res<RenderQueue>,
     extracted_data: Option<Res<ExtractedFluidData3D>>,
     asset_server: Res<AssetServer>,
-    mut pipeline_cache: ResMut<PipelineCache>,
+    pipeline_cache: ResMut<PipelineCache>,
 ) {
     // Skip if no data has been extracted
     let extracted_data = match extracted_data {

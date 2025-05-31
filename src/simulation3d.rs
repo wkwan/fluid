@@ -1,13 +1,16 @@
 use bevy::prelude::*;
-use bevy::math::primitives::{Sphere, Plane3d};
+use bevy::math::primitives::Sphere;
 use bevy::pbr::MeshMaterial3d;
 use bevy::time::{Timer, TimerMode};
-use crate::math::FluidMath3D;
 use crate::simulation::SimulationDimension;
-use crate::spatial_hash3d::SpatialHashResource3D;
-use rand::{self, Rng};
+use crate::spatial_hash3d::{SpatialHashResource3D};
+use rand;
 use serde::{Serialize, Deserialize};
-use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_3D, BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, KILL_Y_THRESHOLD_3D};
+use crate::constants::{
+    PARTICLE_RADIUS, BOUNDARY_DAMPENING, GRAVITY_3D, BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, 
+    KILL_Y_THRESHOLD_3D, MAX_ANGULAR_VELOCITY, DUCK_SIZE, RESTITUTION, 
+    FRICTION, VELOCITY_DAMPING, ANGULAR_DAMPING, HORIZONTAL_DAMPING, MAX_VELOCITY
+};
 
 // 3D particle component
 #[derive(Component)]
@@ -78,9 +81,7 @@ impl Default for MouseInteraction3D {
 const GRAVITY_VEC3: Vec3 = Vec3::new(GRAVITY_3D[0], GRAVITY_3D[1], GRAVITY_3D[2]);
 const BOUNDARY_MIN: Vec3 = Vec3::new(BOUNDARY_3D_MIN[0], BOUNDARY_3D_MIN[1], BOUNDARY_3D_MIN[2]);
 const BOUNDARY_MAX: Vec3 = Vec3::new(BOUNDARY_3D_MAX[0], BOUNDARY_3D_MAX[1], BOUNDARY_3D_MAX[2]);
-const DUCK_SIZE: f32 = PARTICLE_RADIUS * 5.0; // 5x bigger than particles
 const KILL_Y_THRESHOLD: f32 = KILL_Y_THRESHOLD_3D;
-const MAX_ANGULAR_VELOCITY: f32 = 3.0; // Maximum angular velocity in radians per second
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
 pub struct Fluid3DParams {
@@ -122,6 +123,18 @@ impl Default for SpawnRegion3D {
             active: true,
         }
     }
+}
+
+/// Helper function to get cursor world ray from orbit camera
+fn get_cursor_world_ray(
+    windows: &Query<&Window>,
+    camera_q: &Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+) -> Option<(Vec2, Ray3d)> {
+    let window = windows.iter().next()?;
+    let cursor_position = window.cursor_position()?;
+    let (camera, camera_transform) = camera_q.single().ok()?;
+    let ray = camera.viewport_to_world(camera_transform, cursor_position).ok()?;
+    Some((cursor_position, ray))
 }
 
 // ======================== SETUP ============================
@@ -274,48 +287,41 @@ pub fn handle_mouse_input_3d(
     }
 
     // Handle mouse interaction
-    if let Some(window) = windows.iter().next() {
-        if let Some(cursor_position) = window.cursor_position() {
-            if let Ok((camera, camera_transform)) = camera_q.single() {
-                // Convert screen position to world ray
-                if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
-                    // Find the closest particle to the ray to determine interaction depth
-                    let mut closest_distance = f32::INFINITY;
-                    let mut best_position = Vec3::ZERO;
-                    
-                    // Check all particles to find the one closest to the ray
-                    for particle_transform in particles.iter() {
-                        let particle_pos = particle_transform.translation;
-                        
-                        // Calculate distance from particle to ray
-                        let to_particle = particle_pos - ray.origin;
-                        let projection_length = to_particle.dot(*ray.direction);
-                        let closest_point_on_ray = ray.origin + *ray.direction * projection_length;
-                        let distance_to_ray = (particle_pos - closest_point_on_ray).length();
-                        
-                        // If this particle is closer to the ray and within reasonable distance
-                        if distance_to_ray < closest_distance && distance_to_ray < 200.0 {
-                            closest_distance = distance_to_ray;
-                            best_position = closest_point_on_ray;
-                        }
-                    }
-                    
-                    // If we found a good particle, use that position
-                    // Otherwise, fall back to projecting to the middle of the spawn region
-                    if closest_distance < 200.0 {
-                        mouse_interaction_3d.position = best_position;
-                    } else {
-                        // Fallback: project to Y=150 (middle of spawn region)
-                        let interaction_plane_y = 150.0;
-                        let t = if ray.direction.y.abs() > 0.001 {
-                            (interaction_plane_y - ray.origin.y) / ray.direction.y
-                        } else {
-                            100.0
-                        };
-                        mouse_interaction_3d.position = ray.origin + *ray.direction * t;
-                    }
-                }
+    if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
+        // Find the closest particle to the ray to determine interaction depth
+        let mut closest_distance = f32::INFINITY;
+        let mut best_position = Vec3::ZERO;
+        
+        // Check all particles to find the one closest to the ray
+        for particle_transform in particles.iter() {
+            let particle_pos = particle_transform.translation;
+            
+            // Calculate distance from particle to ray
+            let to_particle = particle_pos - ray.origin;
+            let projection_length = to_particle.dot(*ray.direction);
+            let closest_point_on_ray = ray.origin + *ray.direction * projection_length;
+            let distance_to_ray = (particle_pos - closest_point_on_ray).length();
+            
+            // If this particle is closer to the ray and within reasonable distance
+            if distance_to_ray < closest_distance && distance_to_ray < 200.0 {
+                closest_distance = distance_to_ray;
+                best_position = closest_point_on_ray;
             }
+        }
+        
+        // If we found a good particle, use that position
+        // Otherwise, fall back to projecting to the middle of the spawn region
+        if closest_distance < 200.0 {
+            mouse_interaction_3d.position = best_position;
+        } else {
+            // Fallback: project to Y=150 (middle of spawn region)
+            let interaction_plane_y = 150.0;
+            let t = if ray.direction.y.abs() > 0.001 {
+                (interaction_plane_y - ray.origin.y) / ray.direction.y
+            } else {
+                100.0
+            };
+            mouse_interaction_3d.position = ray.origin + *ray.direction * t;
         }
     }
 
@@ -367,7 +373,7 @@ pub fn apply_external_forces_3d(
                     particle.velocity += force;
                     
                     // Add some damping to prevent excessive velocities
-                    particle.velocity *= 0.98;
+                    particle.velocity *= VELOCITY_DAMPING;
                 }
             }
         }
@@ -574,80 +580,6 @@ pub fn recompute_velocities_3d(
     }
 }
 
-pub fn apply_pressure_viscosity_3d(
-    mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
-    spatial_hash: Res<SpatialHashResource3D>,
-    params: Res<Fluid3DParams>,
-    sim_dim: Res<State<SimulationDimension>>,
-) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
-        return;
-    }
-
-    let smoothing_radius = params.smoothing_radius;
-    let smoothing_radius_squared = smoothing_radius * smoothing_radius;
-    let math = FluidMath3D::new(smoothing_radius);
-    let viscosity = params.viscosity_strength;
-
-    // Cache positions and store entities order
-    let mut positions: Vec<Vec3> = Vec::with_capacity(particles_q.iter().count());
-    let mut velocities: Vec<Vec3> = Vec::with_capacity(positions.capacity());
-    let mut entities: Vec<Entity> = Vec::with_capacity(positions.capacity());
-
-    for (e, t, p) in particles_q.iter() {
-        entities.push(e);
-        positions.push(t.translation);
-        velocities.push(p.velocity);
-    }
-
-    let count = positions.len();
-    let mut delta_vs = vec![Vec3::ZERO; count];
-
-    for i in 0..count {
-        let pos_i = positions[i];
-        let vel_i = velocities[i];
-        let entity_i = entities[i];
-        let mut pressure_force = Vec3::ZERO;
-        let mut viscosity_force = Vec3::ZERO;
-
-        // Get neighbors using spatial hash
-        let neighbors = spatial_hash.spatial_hash.get_neighbors(pos_i, smoothing_radius);
-        for &neighbor_entity in &neighbors {
-            if neighbor_entity == entity_i { continue; }
-            if let Ok((_, t_j, p_j)) = particles_q.get(neighbor_entity) {
-                let pos_j = t_j.translation;
-                let vel_j = p_j.velocity;
-                let r = pos_i - pos_j;
-                let dist = r.length();
-                if dist > 0.0 && dist < smoothing_radius {
-                    // Pressure force (spiky gradient)
-                    let dir = r / dist;
-                    let pressure_term = (p_j.pressure + p_j.pressure) * 0.5; // symmetric
-                    let near_pressure_term = (p_j.near_pressure + p_j.near_pressure) * 0.5; // symmetric
-                    let grad = math.spiky_pow3_derivative(dist, smoothing_radius);
-                    let near_grad = math.spiky_pow2_derivative(dist, smoothing_radius);
-                    pressure_force -= dir * (pressure_term * grad + near_pressure_term * near_grad);
-
-                    // Viscosity force (Laplacian)
-                    let lap = math.spiky_pow2(dist, smoothing_radius);
-                    viscosity_force += (vel_j - vel_i) * lap;
-                }
-            }
-        }
-        // Apply viscosity strength
-        viscosity_force *= viscosity;
-        // Accumulate
-        delta_vs[i] = pressure_force + viscosity_force;
-    }
-
-    // Write back velocity changes
-    for (i, entity) in entities.iter().enumerate() {
-        if let Ok((_, _, mut p)) = particles_q.get_mut(*entity) {
-            p.velocity += delta_vs[i];
-        }
-    }
-}
-
 pub fn integrate_positions_3d(
     time: Res<Time>,
     mut particles: Query<(&mut Transform, &mut Particle3D)>,
@@ -713,8 +645,8 @@ pub fn integrate_positions_3d(
                 pos.y = ground_height + PARTICLE_RADIUS;
                 vel.y = -vel.y * collision_damping;
                 // Add some horizontal friction when hitting the ground
-                vel.x *= 0.9;
-                vel.z *= 0.9;
+                vel.x *= HORIZONTAL_DAMPING;
+                vel.z *= HORIZONTAL_DAMPING;
             }
         } else {
             // Fallback to flat ground collision if no deformable ground exists
@@ -725,7 +657,7 @@ pub fn integrate_positions_3d(
         }
 
         // Handle particle-to-particle collisions
-        let neighbors = spatial_hash.spatial_hash.get_neighbors(pos, particle_diameter);
+        let _neighbors = spatial_hash.spatial_hash.get_neighbors(pos, particle_diameter);
         
         for &neighbor_pos in &positions {
             if (neighbor_pos - pos).length() < 0.001 {
@@ -749,8 +681,7 @@ pub fn integrate_positions_3d(
                 
                 // Only resolve if particles are moving towards each other
                 if velocity_along_normal < 0.0 {
-                    let restitution = 0.3; // Bounce factor
-                    let impulse = -(1.0 + restitution) * velocity_along_normal;
+                    let impulse = -(1.0 + RESTITUTION) * velocity_along_normal;
                     vel += separation_direction * impulse;
                 }
             }
@@ -798,9 +729,6 @@ pub fn update_particle_colors_3d(
     particles: Query<(&Particle3D, &MeshMaterial3d<StandardMaterial>)>,
     time: Res<Time>,
 ) {
-    // Adjusted maximum velocity for normalization to match actual simulation velocity values
-    const MAX_VELOCITY: f32 = 700.0;
-    
     // Debug info
     let mut total_magnitude = 0.0;
     let mut count = 0;
@@ -916,26 +844,19 @@ pub fn spawn_duck_at_cursor(
 
     for _ in spawn_duck_ev.read() {
         // Get cursor position and convert to world space
-        if let Some(window) = windows.iter().next() {
-            if let Some(cursor_position) = window.cursor_position() {
-                if let Ok((camera, camera_transform)) = camera_q.single() {
-                    // Convert screen position to world ray
-                    if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
-                        // Project ray to a reasonable distance (middle of spawn region)
-                        let spawn_distance = 150.0; // Distance from camera to spawn duck
-                        let spawn_position = ray.origin + *ray.direction * spawn_distance;
-                        
-                        // Calculate initial velocity based on camera direction
-                        let camera_forward = camera_transform.forward();
-                        let initial_velocity = camera_forward.as_vec3() * 200.0; // Launch speed
-                        
-                        // Load rubber duck model
-                        spawn_rubber_duck_model(&mut commands, &mut meshes, &mut materials, &asset_server, spawn_position, initial_velocity);
-                        
-                        info!("Spawned rubber duck at position: {:?} with velocity: {:?}", spawn_position, initial_velocity);
-                    }
-                }
-            }
+        if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
+            // Project ray to a reasonable distance (middle of spawn region)
+            let spawn_distance = 150.0; // Distance from camera to spawn duck
+            let spawn_position = ray.origin + *ray.direction * spawn_distance;
+            
+            // Calculate initial velocity based on camera direction
+            let camera_forward = ray.direction.normalize();
+            let initial_velocity = camera_forward * 200.0; // Launch speed
+            
+            // Load rubber duck model
+            spawn_rubber_duck_model(&mut commands, &mut meshes, &mut materials, &asset_server, spawn_position, initial_velocity);
+            
+            info!("Spawned rubber duck at position: {:?} with velocity: {:?}", spawn_position, initial_velocity);
         }
     }
 }
@@ -944,7 +865,7 @@ fn spawn_rubber_duck_model(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    asset_server: &Res<AssetServer>,
+    _asset_server: &Res<AssetServer>,
     position: Vec3,
     velocity: Vec3,
 ) {
@@ -1034,7 +955,7 @@ pub fn update_duck_physics(
         transform.rotation = rotation_delta * transform.rotation;
         
         // Add angular damping (air resistance) - stronger damping for smoother motion
-        duck.angular_velocity *= 0.95;
+        duck.angular_velocity *= ANGULAR_DAMPING;
         
         // Handle boundary collisions
         let half_size = duck.size * 0.5;
@@ -1137,7 +1058,7 @@ pub fn handle_particle_duck_collisions(
                 let min_penetration = penetration_x.min(penetration_y).min(penetration_z);
                 
                 let mut normal = Vec3::ZERO;
-                let mut penetration = 0.0;
+                let penetration;
                 
                 if min_penetration == penetration_x {
                     normal.x = if diff.x > 0.0 { 1.0 } else { -1.0 };
@@ -1159,16 +1080,14 @@ pub fn handle_particle_duck_collisions(
                 
                 // Only resolve if objects are moving towards each other
                 if velocity_along_normal < 0.0 {
-                    let restitution = 0.3; // Bounce factor
-                    let impulse = -(1.0 + restitution) * velocity_along_normal;
+                    let impulse = -(1.0 + RESTITUTION) * velocity_along_normal;
                     
                     // Apply impulse to particle (duck is much heavier, so it doesn't move much)
                     particle.velocity += normal * impulse;
                     
                     // Add some friction
-                    let friction = 0.1;
                     let tangent_velocity = relative_velocity - normal * velocity_along_normal;
-                    particle.velocity -= tangent_velocity * friction;
+                    particle.velocity -= tangent_velocity * FRICTION;
                     
                     // Add gentle angular velocity to duck based on collision
                     let collision_point = particle_pos - duck_pos;
@@ -1185,8 +1104,6 @@ pub fn handle_particle_duck_collisions(
 fn create_deformable_plane_mesh(size: f32, width_segments: u32, height_segments: u32) -> (Vec<Vec3>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    
-    let half_size = size * 0.5;
     
     // Generate vertices
     for y in 0..=height_segments {
@@ -1320,31 +1237,25 @@ pub fn handle_ground_deformation(
         deformation_timer.timer.reset();
     }
     
-    if let Some(window) = windows.iter().next() {
-        if let Some(cursor_position) = window.cursor_position() {
-            if let Ok((camera, camera_transform)) = camera_q.single() {
-                if let Ok(ray) = camera.viewport_to_world(camera_transform, cursor_position) {
-                    // Check if ray intersects with ground plane
-                    let ground_y = BOUNDARY_MIN.y;
-                    
-                    if ray.direction.y.abs() > 0.001 {
-                        let t = (ground_y - ray.origin.y) / ray.direction.y;
-                        if t > 0.0 {
-                            let intersection_point = ray.origin + ray.direction * t;
-                            
-                            // Deform the ground at this point
-                            if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
-                                deform_ground_at_point(
-                                    &mut deformable_ground,
-                                    &mut meshes,
-                                    mesh_handle,
-                                    intersection_point,
-                                    ground_transform,
-                                    deform_up,
-                                );
-                            }
-                        }
-                    }
+    if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
+        // Check if ray intersects with ground plane
+        let ground_y = BOUNDARY_MIN.y;
+        
+        if ray.direction.y.abs() > 0.001 {
+            let t = (ground_y - ray.origin.y) / ray.direction.y;
+            if t > 0.0 {
+                let intersection_point = ray.origin + ray.direction * t;
+                
+                // Deform the ground at this point
+                if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
+                    deform_ground_at_point(
+                        &mut deformable_ground,
+                        &mut meshes,
+                        mesh_handle,
+                        intersection_point,
+                        ground_transform,
+                        deform_up,
+                    );
                 }
             }
         }

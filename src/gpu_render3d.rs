@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::pbr::MeshMaterial3d;
 use crate::simulation3d::Particle3D;
 use crate::gpu_fluid3d::GpuParticles3D;
+use crate::constants::MAX_VELOCITY;
 
 // Plugin to handle 3D particle rendering with velocity colors
 pub struct GpuRender3DPlugin;
@@ -20,9 +21,6 @@ fn update_particle_colors_per_velocity(
     gpu_particles: Option<Res<GpuParticles3D>>,
     time: Res<Time>,
 ) {
-    // Use a consistent maximum velocity for normalization
-    const MAX_VELOCITY: f32 = 700.0;
-    
     // Debug info for velocity monitoring
     let mut total_magnitude = 0.0;
     let mut count = 0;

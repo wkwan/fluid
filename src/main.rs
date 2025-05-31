@@ -5,21 +5,25 @@ use bevy_egui::EguiPlugin;
 mod simulation;
 mod spawner;
 mod spatial_hash;
-mod math;
 mod marching;
 mod gpu_fluid;
 mod simulation3d;
 mod orbit_camera;
 mod ui;
 mod constants;
-use fluid::spatial_hash3d;
+mod spatial_hash3d;
 mod presets;
 mod screen_space_fluid;
+mod reordering;
+mod gpu_fluid3d;
+mod gpu_render3d;
+mod fluid3d;
 
 use simulation::SimulationPlugin;
 use spawner::SpawnerPlugin;
 use gpu_fluid::GpuFluidPlugin;
 use ui::UiPlugin;
+use screen_space_fluid::ScreenSpaceFluidPlugin;
 
 fn main() {
     App::new()
@@ -30,6 +34,7 @@ fn main() {
             SimulationPlugin,
             SpawnerPlugin,
             GpuFluidPlugin,
+            ScreenSpaceFluidPlugin,
             FrameTimeDiagnosticsPlugin::default(),
         ))
         .add_systems(Startup, setup)
