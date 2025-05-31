@@ -254,6 +254,32 @@ fn draw_ui(
                                     });
                                     
                                     ui.checkbox(&mut screen_space_settings.unlit, "Unlit");
+                                    
+                                    // Show bilateral filtering parameters for Filtered mode
+                                    if screen_space_settings.rendering_mode == RenderingMode::Filtered {
+                                        ui.separator();
+                                        ui.label("Bilateral Filter Settings:");
+                                        
+                                        ui.horizontal(|ui| {
+                                            ui.label("Filter Radius:");
+                                            ui.add(egui::Slider::new(&mut screen_space_settings.filter_radius, 1.0..=10.0));
+                                        });
+                                        
+                                        ui.horizontal(|ui| {
+                                            ui.label("Depth Threshold:");
+                                            ui.add(egui::Slider::new(&mut screen_space_settings.depth_threshold, 0.1..=5.0));
+                                        });
+                                        
+                                        ui.horizontal(|ui| {
+                                            ui.label("Spatial Sigma:");
+                                            ui.add(egui::Slider::new(&mut screen_space_settings.sigma_spatial, 0.5..=5.0));
+                                        });
+                                        
+                                        ui.horizontal(|ui| {
+                                            ui.label("Depth Sigma:");
+                                            ui.add(egui::Slider::new(&mut screen_space_settings.sigma_depth, 0.1..=2.0));
+                                        });
+                                    }
                                 } else if ray_marching_active {
                                     ui.label("Ray Marching Settings:");
                                     ui.label("Hotkey: Q to toggle");

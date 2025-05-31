@@ -13,6 +13,7 @@ pub mod gpu_render3d;
 pub mod presets;
 pub mod constants;
 pub mod screen_space_fluid;
+pub mod fluid_render_pass;
 
 use bevy::prelude::*;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
@@ -23,6 +24,7 @@ pub use gpu_fluid::{GpuFluidPlugin, GpuState, GpuPerformanceStats};
 pub use simulation::FluidParams;
 pub use marching::RayMarchPlugin;
 pub use screen_space_fluid::ScreenSpaceFluidPlugin;
+pub use fluid_render_pass::FluidRenderPassPlugin;
 
 pub fn app() -> App {
     let mut app = App::new();

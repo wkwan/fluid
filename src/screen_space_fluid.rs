@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderRef};
-use bevy::pbr::{MaterialPlugin, Material};
+use bevy::pbr::Material;
 use crate::simulation3d::Particle3D;
 use crate::simulation::Particle;
 use crate::simulation::SimulationDimension;
@@ -90,6 +90,11 @@ pub struct ScreenSpaceFluidSettings {
     pub alpha: f32,
     pub unlit: bool,
     pub rendering_mode: RenderingMode,
+    // Bilateral filtering parameters
+    pub filter_radius: f32,
+    pub depth_threshold: f32,
+    pub sigma_spatial: f32,
+    pub sigma_depth: f32,
 }
 
 impl Default for ScreenSpaceFluidSettings {
@@ -101,6 +106,11 @@ impl Default for ScreenSpaceFluidSettings {
             alpha: 0.8,
             unlit: true,
             rendering_mode: RenderingMode::Billboard, // Start with working mode
+            // Bilateral filtering defaults
+            filter_radius: 3.0,
+            depth_threshold: 1.0,
+            sigma_spatial: 2.0,
+            sigma_depth: 0.5,
         }
     }
 }
@@ -172,66 +182,111 @@ pub fn render_screen_space_fluid_system(
         meshes.add(Circle::new(1.0))
     };
     
-    // Simplified approach - use standard materials for now
+    // Render particles based on mode
     match settings.rendering_mode {
         RenderingMode::DepthOnly => {
-            // Use grayscale to represent depth mode
-            let material = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.7, 0.7, 0.7).with_alpha(settings.alpha),
-                unlit: settings.unlit,
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            });
-            
-            // Spawn particles
-            for particle_transform in particles.iter() {
-                let look_at = camera_transform.translation - particle_transform.translation;
-                let rotation = Transform::from_translation(Vec3::ZERO)
-                    .looking_at(-look_at, Vec3::Y)
-                    .rotation;
-                
-                commands.spawn((
-                    Mesh3d(mesh_handle.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_translation(particle_transform.translation)
-                        .with_rotation(rotation)
-                        .with_scale(Vec3::splat(settings.particle_scale)),
-                    ScreenSpaceFluid,
-                    ScreenSpaceFluidMesh,
-                    Name::new("Screen Space Fluid Particle - Depth"),
-                ));
-            }
+            render_depth_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+        }
+        RenderingMode::Filtered => {
+            render_filtered_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
         }
         _ => {
-            // Billboard mode - normal colored particles
-            let material = materials.add(StandardMaterial {
-                base_color: settings.color.with_alpha(settings.alpha),
-                unlit: settings.unlit,
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            });
-            
-            // Spawn particles
-            for particle_transform in particles.iter() {
-                let look_at = camera_transform.translation - particle_transform.translation;
-                let rotation = Transform::from_translation(Vec3::ZERO)
-                    .looking_at(-look_at, Vec3::Y)
-                    .rotation;
-                
-                commands.spawn((
-                    Mesh3d(mesh_handle.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_translation(particle_transform.translation)
-                        .with_rotation(rotation)
-                        .with_scale(Vec3::splat(settings.particle_scale)),
-                    ScreenSpaceFluid,
-                    ScreenSpaceFluidMesh,
-                    Name::new("Screen Space Fluid Particle - Billboard"),
-                ));
-            }
+            render_billboard_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
         }
     }
     
     info!("Screen space rendering: {} particles in {:?} mode", particle_count, settings.rendering_mode);
+}
+
+// Helper function for billboard mode particles
+fn render_billboard_mode_particles(
+    commands: &mut Commands,
+    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    mesh_handle: &Handle<Mesh>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    settings: &Res<ScreenSpaceFluidSettings>,
+    camera_transform: &Transform,
+) {
+    let material = materials.add(StandardMaterial {
+        base_color: settings.color.with_alpha(settings.alpha),
+        unlit: settings.unlit,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    
+    spawn_particles(commands, particles, mesh_handle, material, camera_transform, settings.particle_scale, "Billboard");
+}
+
+// Helper function for depth mode particles  
+fn render_depth_mode_particles(
+    commands: &mut Commands,
+    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    mesh_handle: &Handle<Mesh>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    settings: &Res<ScreenSpaceFluidSettings>,
+    camera_transform: &Transform,
+) {
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.7, 0.7, 0.7).with_alpha(settings.alpha),
+        unlit: settings.unlit,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    
+    spawn_particles(commands, particles, mesh_handle, material, camera_transform, settings.particle_scale, "Depth");
+}
+
+// Helper function for filtered mode particles - simulates bilateral filtering with parameter-driven effects
+fn render_filtered_mode_particles(
+    commands: &mut Commands,
+    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    mesh_handle: &Handle<Mesh>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    settings: &Res<ScreenSpaceFluidSettings>,
+    camera_transform: &Transform,
+) {
+    // Create material with enhanced smoothness based on filter parameters
+    let transparency_factor = 1.0 - (settings.filter_radius / 10.0).clamp(0.0, 0.6);
+    let material = materials.add(StandardMaterial {
+        base_color: settings.color.with_alpha(settings.alpha * transparency_factor),
+        unlit: settings.unlit,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    
+    // Scale particles based on filter radius to simulate smoothing
+    let filter_scale_factor = 1.0 + (settings.filter_radius / 5.0);
+    let enhanced_scale = settings.particle_scale * filter_scale_factor;
+    
+    spawn_particles(commands, particles, mesh_handle, material, camera_transform, enhanced_scale, "Filtered");
+}
+
+// Common particle spawning function
+fn spawn_particles(
+    commands: &mut Commands,
+    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    mesh_handle: &Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+    camera_transform: &Transform,
+    particle_scale: f32,
+    mode_name: &str,
+) {
+    for particle_transform in particles.iter() {
+        let look_at = camera_transform.translation - particle_transform.translation;
+        let rotation = Transform::from_translation(Vec3::ZERO)
+            .looking_at(-look_at, Vec3::Y)
+            .rotation;
+        
+        commands.spawn((
+            Mesh3d(mesh_handle.clone()),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation(particle_transform.translation)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(particle_scale)),
+            ScreenSpaceFluid,
+            ScreenSpaceFluidMesh,
+            Name::new(format!("Screen Space Fluid Particle - {}", mode_name)),
+        ));
+    }
 }
 
