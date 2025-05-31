@@ -280,6 +280,27 @@ fn draw_ui(
                                             ui.add(egui::Slider::new(&mut screen_space_settings.sigma_depth, 0.1..=2.0));
                                         });
                                     }
+                                    
+                                    // Show full fluid parameters for FullFluid mode
+                                    if screen_space_settings.rendering_mode == RenderingMode::FullFluid {
+                                        ui.separator();
+                                        ui.label("Full Fluid Settings:");
+                                        
+                                        ui.horizontal(|ui| {
+                                            ui.label("Transparency:");
+                                            ui.add(egui::Slider::new(&mut screen_space_settings.fluid_transparency, 0.1..=1.0));
+                                        });
+                                        
+                                        ui.horizontal(|ui| {
+                                            ui.label("Internal Glow:");
+                                            ui.add(egui::Slider::new(&mut screen_space_settings.internal_glow, 0.0..=1.0));
+                                        });
+                                        
+                                        ui.horizontal(|ui| {
+                                            ui.label("Volume Scale:");
+                                            ui.add(egui::Slider::new(&mut screen_space_settings.volume_scale, 1.0..=3.0));
+                                        });
+                                    }
                                 } else if ray_marching_active {
                                     ui.label("Ray Marching Settings:");
                                     ui.label("Hotkey: Q to toggle");

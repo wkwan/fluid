@@ -44,7 +44,7 @@ impl Default for FluidRenderPipelineData {
 impl FluidRenderPipelineData {
     pub fn create_textures(
         &mut self,
-        render_device: &RenderDevice,
+        _render_device: &RenderDevice,
         images: &mut Assets<Image>,
         width: u32,
         height: u32,

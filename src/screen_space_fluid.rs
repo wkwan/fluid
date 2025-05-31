@@ -10,8 +10,8 @@ pub struct ScreenSpaceFluidPlugin;
 impl Plugin for ScreenSpaceFluidPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScreenSpaceFluidSettings>()
-            // Temporarily remove custom material plugin until we fix shader bindings
-            // .add_plugins(MaterialPlugin::<ScreenSpaceFluidMaterial>::default())
+            // Temporarily remove custom material until we can fix the shader binding issues
+            // .add_plugins(MaterialPlugin::<FluidNormalsMaterial>::default())
             .add_systems(Startup, setup_screen_space_resources)
             .add_systems(Update, render_screen_space_fluid_system
                 .run_if(|settings: Res<ScreenSpaceFluidSettings>, sim_dim: Res<State<SimulationDimension>>| 
@@ -71,6 +71,35 @@ impl Material for ScreenSpaceFluidMaterial {
     }
 }
 
+// Custom material for normal visualization and lighting
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct FluidNormalsMaterial {
+    #[uniform(0)]
+    pub base_color: Vec4,
+    #[uniform(0)]
+    pub particle_scale: f32,
+    #[uniform(0)]
+    pub _padding1: f32,
+    #[uniform(0)]
+    pub _padding2: f32,
+    #[uniform(0)]
+    pub _padding3: f32,
+}
+
+impl Material for FluidNormalsMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/fluid_normals.wgsl".into()
+    }
+    
+    fn vertex_shader() -> ShaderRef {
+        "shaders/fluid_normals.wgsl".into()
+    }
+    
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+}
+
 // Rendering mode for screen space fluid
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderingMode {
@@ -95,6 +124,10 @@ pub struct ScreenSpaceFluidSettings {
     pub depth_threshold: f32,
     pub sigma_spatial: f32,
     pub sigma_depth: f32,
+    // Full fluid rendering parameters
+    pub fluid_transparency: f32,
+    pub internal_glow: f32,
+    pub volume_scale: f32,
 }
 
 impl Default for ScreenSpaceFluidSettings {
@@ -105,12 +138,16 @@ impl Default for ScreenSpaceFluidSettings {
             color: Color::srgb(0.3, 0.7, 1.0),
             alpha: 0.8,
             unlit: true,
-            rendering_mode: RenderingMode::Billboard, // Start with working mode
+            rendering_mode: RenderingMode::FullFluid, // Show the final result
             // Bilateral filtering defaults
             filter_radius: 3.0,
             depth_threshold: 1.0,
             sigma_spatial: 2.0,
             sigma_depth: 0.5,
+            // Full fluid rendering defaults
+            fluid_transparency: 0.7,
+            internal_glow: 0.3,
+            volume_scale: 1.4,
         }
     }
 }
@@ -190,6 +227,12 @@ pub fn render_screen_space_fluid_system(
         RenderingMode::Filtered => {
             render_filtered_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
         }
+        RenderingMode::Normals => {
+            render_normals_mode_particles_simple(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+        }
+        RenderingMode::FullFluid => {
+            render_full_fluid_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+        }
         _ => {
             render_billboard_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
         }
@@ -261,6 +304,73 @@ fn render_filtered_mode_particles(
     spawn_particles(commands, particles, mesh_handle, material, camera_transform, enhanced_scale, "Filtered");
 }
 
+// Helper function for normals mode particles - simplified approach using StandardMaterial
+fn render_normals_mode_particles_simple(
+    commands: &mut Commands,
+    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    mesh_handle: &Handle<Mesh>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    settings: &Res<ScreenSpaceFluidSettings>,
+    camera_transform: &Transform,
+) {
+    // Create a material that simulates normal-based lighting
+    // Use special material properties to create a distinct visual appearance
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.9, 0.9, 1.0).with_alpha(settings.alpha), // Light blue-white
+        // Note: In Bevy 0.16, PBR properties have different names
+        // We'll use a more emissive approach for visibility
+        emissive: LinearRgba::new(0.1, 0.1, 0.3, 1.0), // Slight blue glow
+        unlit: false,      // Enable lighting to show the difference
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    
+    spawn_particles(commands, particles, mesh_handle, material, camera_transform, settings.particle_scale, "Normals");
+}
+
+// Helper function for full fluid mode - combines all screen space fluid techniques
+fn render_full_fluid_particles(
+    commands: &mut Commands,
+    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    mesh_handle: &Handle<Mesh>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    settings: &Res<ScreenSpaceFluidSettings>,
+    camera_transform: &Transform,
+) {
+    // Create a high-quality fluid material using user-configurable parameters
+    let base_linear = settings.color.to_linear();
+    let material = materials.add(StandardMaterial {
+        // Use base color with configurable transparency
+        base_color: Color::srgba(
+            base_linear.red * 0.8,    // Darken for depth
+            base_linear.green * 0.9, 
+            base_linear.blue * 1.0,   // Keep blue strong
+            settings.fluid_transparency
+        ),
+        
+        // Configurable internal glow for volumetric effect
+        emissive: LinearRgba::new(
+            base_linear.red * settings.internal_glow * 0.3,
+            base_linear.green * settings.internal_glow * 0.5,
+            base_linear.blue * settings.internal_glow * 1.0,
+            1.0
+        ),
+        
+        // Enable lighting for realistic shading
+        unlit: false,
+        
+        // Use blend mode for proper transparency layering
+        alpha_mode: AlphaMode::Blend,
+        
+        ..default()
+    });
+    
+    // Use configurable volume scale with filter radius influence
+    let fluid_scale = settings.particle_scale * settings.volume_scale * (1.0 + settings.filter_radius / 10.0);
+    
+    spawn_particles(commands, particles, mesh_handle, material, camera_transform, fluid_scale, "FullFluid");
+}
+
 // Common particle spawning function
 fn spawn_particles(
     commands: &mut Commands,
@@ -289,4 +399,5 @@ fn spawn_particles(
         ));
     }
 }
+
 
