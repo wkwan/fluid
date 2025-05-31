@@ -1,9 +1,9 @@
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 use bevy::pbr::Material;
-use crate::simulation3d::Particle3D;
-use crate::simulation::Particle;
-use crate::simulation::SimulationDimension;
+use crate::three_d::simulation::Particle3D;
+use crate::sim::Particle;
+use crate::sim::SimulationDimension;
 
 pub struct ScreenSpaceFluidPlugin;
 

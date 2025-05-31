@@ -1,11 +1,11 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use crate::simulation::{DrawLakeMode, FluidParams, MouseInteraction, ColorMapParams};
-use crate::simulation3d::{Fluid3DParams, MouseInteraction3D};
-use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
-use crate::simulation::SimulationDimension;
-use crate::marching::RayMarchingSettings;
-use crate::screen_space_fluid::{ScreenSpaceFluidSettings, RenderingMode};
+use crate::sim::{DrawLakeMode, FluidParams, MouseInteraction, ColorMapParams};
+use crate::three_d::simulation::{Fluid3DParams, MouseInteraction3D};
+use crate::two_d::gpu_fluid::{GpuState, GpuPerformanceStats};
+use crate::sim::SimulationDimension;
+use crate::three_d::marching::RayMarchingSettings;
+use crate::three_d::screenspace_fluid::{ScreenSpaceFluidSettings, RenderingMode};
 use crate::constants::{MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 
 pub struct UiPlugin;
@@ -28,7 +28,7 @@ fn draw_ui(
     mut perf_stats: ResMut<GpuPerformanceStats>,
     sim_dim: Res<State<SimulationDimension>>,
     mut next_sim_dim: ResMut<NextState<SimulationDimension>>,
-    mut reset_ev: EventWriter<crate::simulation::ResetSim>,
+    mut reset_ev: EventWriter<crate::sim::ResetSim>,
     mut raymarching_settings: ResMut<RayMarchingSettings>,
     mut screen_space_settings: ResMut<ScreenSpaceFluidSettings>,
 ) {
@@ -85,12 +85,12 @@ fn draw_ui(
                                 if ui.selectable_label(current_dim == SimulationDimension::Dim2, "2D").clicked() {
                                     next_sim_dim.set(SimulationDimension::Dim2);
                                     gpu_state.enabled = false;
-                                    reset_ev.write(crate::simulation::ResetSim);
+                                    reset_ev.write(crate::sim::ResetSim);
                                 }
                                 if ui.selectable_label(current_dim == SimulationDimension::Dim3, "3D").clicked() {
                                     next_sim_dim.set(SimulationDimension::Dim3);
                                     gpu_state.enabled = true;
-                                    reset_ev.write(crate::simulation::ResetSim);
+                                    reset_ev.write(crate::sim::ResetSim);
                                 }
                             });
                             
@@ -526,7 +526,7 @@ fn draw_ui(
                         raymarching_settings.extinction_coefficient = Vec3::new(0.0, 0.0, 0.0);
                         raymarching_settings.surface_smoothness = 0.5;
                         
-                        reset_ev.write(crate::simulation::ResetSim);
+                        reset_ev.write(crate::sim::ResetSim);
                     }
                     ui.label("Hotkey: X");
                     

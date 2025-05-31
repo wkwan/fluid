@@ -15,7 +15,7 @@ use bevy::{
 use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 
-use crate::simulation::{Particle, FluidParams, MouseInteraction};
+use crate::sim::{Particle, FluidParams, MouseInteraction};
 use crate::constants::{PARTICLE_RADIUS, BOUNDARY_DAMPENING, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 
 pub struct GpuFluidPlugin;
@@ -285,7 +285,7 @@ fn handle_mouse_input(
     mut mouse_interaction: ResMut<MouseInteraction>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
     mut gpu_state: ResMut<GpuState>,
-    draw_lake_mode: Res<crate::simulation::DrawLakeMode>,
+    draw_lake_mode: Res<crate::sim::DrawLakeMode>,
 ) {
     // Handle mouse interaction (disabled when Draw Lake mode is active)
     if let Some(window) = windows.iter().next() {

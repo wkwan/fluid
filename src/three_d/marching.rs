@@ -7,9 +7,9 @@ use bevy::{
     reflect::TypePath,
     math::primitives::Cuboid,
 };
-use crate::simulation3d::Particle3D;
-use crate::simulation::Particle;
-use crate::simulation::SimulationDimension;
+use crate::three_d::simulation::Particle3D;
+use crate::sim::Particle;
+use crate::sim::SimulationDimension;
 use crate::constants::{RAY_MARCH_BOUNDS_MIN, RAY_MARCH_BOUNDS_MAX};
 
 /// Helper function to despawn entities from a query

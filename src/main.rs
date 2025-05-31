@@ -2,28 +2,19 @@ use bevy::prelude::*;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin};
 use bevy_egui::EguiPlugin;
 
-mod simulation;
-mod spawner;
-mod spatial_hash;
-mod marching;
-mod gpu_fluid;
-mod simulation3d;
-mod orbit_camera;
+mod two_d;
+mod three_d;
+
+mod cam;
 mod ui;
 mod constants;
-mod spatial_hash3d;
-mod presets;
-mod screen_space_fluid;
-mod reordering;
-mod gpu_fluid3d;
-mod gpu_render3d;
-mod fluid3d;
+mod sim;
 
-use simulation::SimulationPlugin;
-use spawner::SpawnerPlugin;
-use gpu_fluid::GpuFluidPlugin;
+use sim::SimulationPlugin;
+use two_d::spawner::SpawnerPlugin;
+use two_d::gpu_fluid::GpuFluidPlugin;
 use ui::UiPlugin;
-use screen_space_fluid::ScreenSpaceFluidPlugin;
+use three_d::screenspace_fluid::ScreenSpaceFluidPlugin;
 
 fn main() {
     App::new()

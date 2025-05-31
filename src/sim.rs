@@ -1,21 +1,21 @@
 use bevy::prelude::*;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, DiagnosticsStore};
-use crate::spatial_hash::SpatialHash;
-use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
-use crate::orbit_camera::{spawn_orbit_camera, control_orbit_camera, spawn_2d_camera, despawn_2d_camera};
+use crate::two_d::spatial_hash::SpatialHash;
+use crate::two_d::gpu_fluid::{GpuState, GpuPerformanceStats};
+use crate::cam::{spawn_orbit_camera, control_orbit_camera, spawn_2d_camera, despawn_2d_camera};
 use bevy::prelude::Camera3d;
 use crate::constants::{GRAVITY_2D, BOUNDARY_DAMPENING, PARTICLE_RADIUS, REST_DENSITY, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
-use crate::simulation3d::{
+use crate::three_d::simulation::{
     apply_external_forces_3d, predict_positions_3d, calculate_density_3d, double_density_relaxation_3d, 
     recompute_velocities_3d, integrate_positions_3d, update_spatial_hash_3d,
     Fluid3DParams, SpawnRegion3D, recycle_particles_3d, MouseInteraction3D,
     handle_mouse_input_3d, update_mouse_indicator_3d, handle_ground_deformation, GroundDeformationTimer,
 };
-use crate::spatial_hash3d::SpatialHashResource3D;
+use crate::three_d::spatial_hash::SpatialHashResource3D;
 use bevy::prelude::{States, Reflect};
 use bevy::time::Timer;
 use bevy::time::TimerMode;
-use crate::presets::{PresetManager3D, load_presets_system};
+use crate::three_d::presets::{PresetManager3D, load_presets_system};
 // 3D simulation systems are referenced via full paths to avoid module ordering issues.
 
 // Define ColorMapParams locally since we removed the utility module
@@ -88,8 +88,8 @@ impl Plugin for SimulationPlugin {
             .init_resource::<ToggleCooldown>()
             .init_resource::<PresetManager3D>()
             .init_resource::<GroundDeformationTimer>()
-            .init_resource::<crate::marching::RayMarchingSettings>()
-            .add_plugins(crate::marching::RayMarchPlugin)
+            .init_resource::<crate::three_d::marching::RayMarchingSettings>()
+            .add_plugins(crate::three_d::marching::RayMarchPlugin)
             .add_systems(Startup, load_presets_system)
            .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
@@ -110,8 +110,8 @@ impl Plugin for SimulationPlugin {
            ).chain().run_if(gpu_disabled).run_if(in_state(SimulationDimension::Dim2)))
 
             // ===== 3D Setup =====
-            .add_systems(Update, crate::simulation3d::setup_3d_environment.run_if(in_state(SimulationDimension::Dim3)))
-            .add_systems(Update, crate::simulation3d::spawn_particles_3d.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::three_d::simulation::setup_3d_environment.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::three_d::simulation::spawn_particles_3d.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, update_spatial_hash_on_radius_change_3d.run_if(in_state(SimulationDimension::Dim3)))
 
             // ===== 3D Physics =====
@@ -132,10 +132,10 @@ impl Plugin for SimulationPlugin {
                     .run_if(in_state(SimulationDimension::Dim3)),
             )
             // ===== 3D Duck Systems =====
-            .add_systems(Update, crate::simulation3d::spawn_duck_at_cursor.run_if(in_state(SimulationDimension::Dim3)))
-            .add_systems(Update, crate::simulation3d::update_duck_physics.run_if(in_state(SimulationDimension::Dim3)))
-            .add_systems(Update, crate::simulation3d::handle_particle_duck_collisions.run_if(in_state(SimulationDimension::Dim3)))
-            .add_systems(Update, crate::simulation3d::update_particle_colors_3d.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::three_d::simulation::spawn_duck_at_cursor.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::three_d::simulation::update_duck_physics.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::three_d::simulation::handle_particle_duck_collisions.run_if(in_state(SimulationDimension::Dim3)))
+            .add_systems(Update, crate::three_d::simulation::update_particle_colors_3d.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, update_mouse_indicator_3d.run_if(in_state(SimulationDimension::Dim3)))
             .add_systems(Update, handle_ground_deformation.run_if(in_state(SimulationDimension::Dim3)))
            .add_systems(Update, update_particle_colors)
@@ -152,7 +152,7 @@ impl Plugin for SimulationPlugin {
                 spawn_2d_camera,
             ).run_if(in_state(SimulationDimension::Dim2)))
             // Camera cleanup when switching dimensions - run on state transitions
-            .add_systems(OnEnter(SimulationDimension::Dim2), crate::orbit_camera::despawn_orbit_camera)
+            .add_systems(OnEnter(SimulationDimension::Dim2), crate::cam::despawn_orbit_camera)
             .add_systems(OnEnter(SimulationDimension::Dim3), despawn_2d_camera)
             // Preset hotkey
             .add_systems(Update, preset_hotkey_3d)
@@ -331,7 +331,7 @@ fn handle_input(
     mut reset_ev: EventWriter<ResetSim>,
     mut fluid3d_params: ResMut<Fluid3DParams>,
     mut toggle_cooldown: ResMut<ToggleCooldown>,
-    mut raymarching_settings: ResMut<crate::marching::RayMarchingSettings>,
+    mut raymarching_settings: ResMut<crate::three_d::marching::RayMarchingSettings>,
     time: Res<Time>,
 ) {
 
@@ -923,12 +923,12 @@ fn handle_reset_sim(
     mut ev: EventReader<ResetSim>,
     mut commands: Commands,
     q_particles2d: Query<Entity, With<Particle>>,
-    q_particles3d: Query<Entity, With<crate::simulation3d::Particle3D>>,
-    q_marker3d: Query<Entity, With<crate::simulation3d::Marker3D>>,
-    q_ducks: Query<Entity, With<crate::simulation3d::RubberDuck>>,
-    q_orbit: Query<Entity, With<crate::orbit_camera::OrbitCamera>>,
+    q_particles3d: Query<Entity, With<crate::three_d::simulation::Particle3D>>,
+    q_marker3d: Query<Entity, With<crate::three_d::simulation::Marker3D>>,
+    q_ducks: Query<Entity, With<crate::three_d::simulation::RubberDuck>>,
+    q_orbit: Query<Entity, With<crate::cam::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
-    q_cam2d: Query<Entity, With<crate::orbit_camera::Camera2DMarker>>,
+    q_cam2d: Query<Entity, With<crate::cam::Camera2DMarker>>,
     _sim_dim: Res<State<SimulationDimension>>,
     world: &World,
 ) {
@@ -1028,7 +1028,7 @@ fn update_spatial_hash_on_radius_change_3d(
     // Check if the smoothing radius has changed from the spatial hash's current cell size
     if (fluid3d_params.smoothing_radius - spatial_hash_3d.spatial_hash.cell_size).abs() > 0.1 {
         // Update the spatial hash with the new smoothing radius
-        spatial_hash_3d.spatial_hash = crate::spatial_hash3d::SpatialHash3D::new(fluid3d_params.smoothing_radius);
+        spatial_hash_3d.spatial_hash = crate::three_d::spatial_hash::SpatialHash3D::new(fluid3d_params.smoothing_radius);
         info!("Updated 3D spatial hash cell size to: {}", fluid3d_params.smoothing_radius);
     }
 }

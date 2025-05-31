@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::simulation::{Particle, FluidParams};
+use crate::sim::{Particle, FluidParams};
 
 /// Resource to track when particles were last reordered
 #[derive(Resource, Default)]

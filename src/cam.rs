@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
-use crate::simulation::SimulationDimension;
+use crate::sim::SimulationDimension;
 use crate::constants::{MIN_ZOOM, MAX_ZOOM, RESET_YAW, RESET_PITCH, RESET_DISTANCE};
 
 #[derive(Component, Default)]
@@ -71,7 +71,7 @@ pub fn control_orbit_camera(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     sim_dim: Res<State<SimulationDimension>>,
-    draw_lake_mode: Res<crate::simulation::DrawLakeMode>,
+    draw_lake_mode: Res<crate::sim::DrawLakeMode>,
 ) {
     if *sim_dim.get() != SimulationDimension::Dim3 {
         return;

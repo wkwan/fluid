@@ -15,9 +15,9 @@ use bevy::{
 use bytemuck::{Pod, Zeroable, cast_slice};
 use std::borrow::Cow;
 
-use crate::gpu_fluid::GpuState;
-use crate::simulation3d::{Particle3D, Fluid3DParams};
-use crate::simulation::{MouseInteraction};
+use crate::two_d::gpu_fluid::GpuState;
+use crate::three_d::simulation::{Particle3D, Fluid3DParams};
+use crate::sim::{MouseInteraction};
 use crate::constants::{BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, GPU_PARTICLE_RADIUS, GRAVITY_3D};
 
 /// Plugin for GPU-accelerated 3D Fluid Simulation

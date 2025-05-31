@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::pbr::MeshMaterial3d;
-use crate::simulation3d::Particle3D;
-use crate::gpu_fluid3d::GpuParticles3D;
+use crate::three_d::simulation::Particle3D;
+use crate::three_d::gpu_fluid::GpuParticles3D;
 use crate::constants::MAX_VELOCITY;
 
 // Plugin to handle 3D particle rendering with velocity colors

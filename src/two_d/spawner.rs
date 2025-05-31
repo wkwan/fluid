@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use rand::Rng;
 
-use crate::simulation::{Particle, FluidParams, SimulationDimension};
+use crate::sim::{Particle, FluidParams, SimulationDimension};
 use crate::constants::PARTICLE_RADIUS;
 
 pub struct SpawnerPlugin;

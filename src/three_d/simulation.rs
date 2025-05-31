@@ -2,8 +2,8 @@ use bevy::prelude::*;
 use bevy::math::primitives::Sphere;
 use bevy::pbr::MeshMaterial3d;
 use bevy::time::{Timer, TimerMode};
-use crate::simulation::SimulationDimension;
-use crate::spatial_hash3d::{SpatialHashResource3D};
+use crate::sim::SimulationDimension;
+use crate::three_d::spatial_hash::{SpatialHashResource3D};
 use rand;
 use serde::{Serialize, Deserialize};
 use crate::constants::{
@@ -128,7 +128,7 @@ impl Default for SpawnRegion3D {
 /// Helper function to get cursor world ray from orbit camera
 fn get_cursor_world_ray(
     windows: &Query<&Window>,
-    camera_q: &Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+    camera_q: &Query<(&Camera, &GlobalTransform), With<crate::cam::OrbitCamera>>,
 ) -> Option<(Vec2, Ray3d)> {
     let window = windows.iter().next()?;
     let cursor_position = window.cursor_position()?;
@@ -276,11 +276,11 @@ pub fn spawn_particles_3d(
 pub fn handle_mouse_input_3d(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::cam::OrbitCamera>>,
     mut mouse_interaction_3d: ResMut<MouseInteraction3D>,
     sim_dim: Res<State<SimulationDimension>>,
     particles: Query<&Transform, With<Particle3D>>,
-    draw_lake_mode: Res<crate::simulation::DrawLakeMode>,
+    draw_lake_mode: Res<crate::sim::DrawLakeMode>,
 ) {
     if *sim_dim.get() != SimulationDimension::Dim3 {
         return;
@@ -831,9 +831,9 @@ pub fn spawn_duck_at_cursor(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut spawn_duck_ev: EventReader<crate::simulation::SpawnDuck>,
+    mut spawn_duck_ev: EventReader<crate::sim::SpawnDuck>,
     windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::cam::OrbitCamera>>,
     sim_dim: Res<State<SimulationDimension>>,
     asset_server: Res<AssetServer>,
 ) {
@@ -1194,10 +1194,10 @@ impl Default for GroundDeformationTimer {
 pub fn handle_ground_deformation(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<crate::orbit_camera::OrbitCamera>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<crate::cam::OrbitCamera>>,
     mut ground_query: Query<(&mut DeformableGround, &Mesh3d, &Transform), With<GroundPlane>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    draw_lake_mode: Res<crate::simulation::DrawLakeMode>,
+    draw_lake_mode: Res<crate::sim::DrawLakeMode>,
     sim_dim: Res<State<SimulationDimension>>,
     mut deformation_timer: ResMut<GroundDeformationTimer>,
     time: Res<Time>,

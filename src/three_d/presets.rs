@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use bevy::prelude::*;
-use crate::simulation3d::{Fluid3DParams, SpawnRegion3D};
+use crate::three_d::simulation::{Fluid3DParams, SpawnRegion3D};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Preset3D {
