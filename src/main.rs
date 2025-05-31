@@ -37,10 +37,5 @@ fn main() {
             ScreenSpaceFluidPlugin,
             FrameTimeDiagnosticsPlugin::default(),
         ))
-        .add_systems(Startup, setup)
         .run();
 }
-
-fn setup(_commands: Commands) {
-    // Camera spawning is now handled by dimension-specific systems
-} 
