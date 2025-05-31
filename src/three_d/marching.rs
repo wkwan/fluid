@@ -8,7 +8,7 @@ use bevy::{
     math::primitives::Cuboid,
 };
 use crate::three_d::simulation::Particle3D;
-use crate::sim::Particle;
+use crate::two_d::simulation::Particle;
 use crate::sim::SimulationDimension;
 use crate::constants::{RAY_MARCH_BOUNDS_MIN, RAY_MARCH_BOUNDS_MAX};
 use crate::utils::despawn_entities;

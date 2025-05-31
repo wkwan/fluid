@@ -125,6 +125,41 @@ impl Default for SpawnRegion3D {
     }
 }
 
+#[derive(Event)]
+pub struct SpawnDuck;
+
+// Resource to track Draw Lake mode state
+#[derive(Resource, Default)]
+pub struct DrawLakeMode {
+    pub enabled: bool,
+}
+
+#[derive(Clone)]
+pub struct Preset3D {
+    pub name: String,
+    pub params: Fluid3DParams,
+    pub spawn_region: SpawnRegion3D,
+    pub seed: u64,
+}
+
+#[derive(Resource, Default)]
+pub struct PresetManager3D {
+    pub presets: Vec<Preset3D>,
+    pub current: usize,
+}
+
+impl PresetManager3D {
+    pub fn current_preset(&self) -> Option<&Preset3D> {
+        self.presets.get(self.current)
+    }
+
+    pub fn next(&mut self) {
+        if !self.presets.is_empty() {
+            self.current = (self.current + 1) % self.presets.len();
+        }
+    }
+}
+
 /// Helper function to get cursor world ray from orbit camera
 fn get_cursor_world_ray(
     windows: &Query<&Window>,
@@ -280,7 +315,7 @@ pub fn handle_mouse_input_3d(
     mut mouse_interaction_3d: ResMut<MouseInteraction3D>,
     sim_dim: Res<State<SimulationDimension>>,
     particles: Query<&Transform, With<Particle3D>>,
-    draw_lake_mode: Res<crate::sim::DrawLakeMode>,
+    draw_lake_mode: Res<DrawLakeMode>,
 ) {
     if *sim_dim.get() != SimulationDimension::Dim3 {
         return;
@@ -831,7 +866,7 @@ pub fn spawn_duck_at_cursor(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut spawn_duck_ev: EventReader<crate::sim::SpawnDuck>,
+    mut spawn_duck_ev: EventReader<SpawnDuck>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::three_d::camera::OrbitCamera>>,
     sim_dim: Res<State<SimulationDimension>>,
@@ -1197,7 +1232,7 @@ pub fn handle_ground_deformation(
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::three_d::camera::OrbitCamera>>,
     mut ground_query: Query<(&mut DeformableGround, &Mesh3d, &Transform), With<GroundPlane>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    draw_lake_mode: Res<crate::sim::DrawLakeMode>,
+    draw_lake_mode: Res<DrawLakeMode>,
     sim_dim: Res<State<SimulationDimension>>,
     mut deformation_timer: ResMut<GroundDeformationTimer>,
     time: Res<Time>,
@@ -1482,3 +1517,63 @@ fn create_boundary_wireframe(
         ));
     }
 } 
+
+pub fn handle_draw_lake_toggle(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut draw_lake_mode: ResMut<DrawLakeMode>,
+) {
+    if keys.just_pressed(KeyCode::KeyL) {
+        draw_lake_mode.enabled = !draw_lake_mode.enabled;
+    }
+} 
+
+pub fn handle_duck_spawning(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut spawn_duck_ev: EventWriter<SpawnDuck>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::Space) {
+        spawn_duck_ev.write(SpawnDuck);
+    }
+}
+
+// Hotkey to cycle 3D presets (P key)
+pub fn preset_hotkey_3d(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut preset_mgr: ResMut<PresetManager3D>,
+    mut fluid3d_params: ResMut<Fluid3DParams>,
+    sim_dim: Res<State<SimulationDimension>>,
+) {
+    if *sim_dim.get() != SimulationDimension::Dim3 {
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::KeyP) {
+        preset_mgr.next();
+        if let Some(p) = preset_mgr.current_preset() {
+            *fluid3d_params = p.params.clone();
+            info!("Loaded preset: {}", p.name);
+        }
+    }
+}
+
+// System to update spatial hash when smoothing radius changes in 3D
+pub fn update_spatial_hash_on_radius_change_3d(
+    fluid3d_params: Res<Fluid3DParams>,
+    mut spatial_hash_3d: ResMut<SpatialHashResource3D>,
+) {
+    // Check if the smoothing radius has changed from the spatial hash's current cell size
+    if (fluid3d_params.smoothing_radius - spatial_hash_3d.spatial_hash.cell_size).abs() > 0.1 {
+        // Update the spatial hash with the new smoothing radius
+        spatial_hash_3d.spatial_hash =
+            crate::three_d::spatial_hash::SpatialHash3D::new(fluid3d_params.smoothing_radius);
+        info!(
+            "Updated 3D spatial hash cell size to: {}",
+            fluid3d_params.smoothing_radius
+        );
+    }
+}

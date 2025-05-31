@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 use bevy::pbr::Material;
 use crate::three_d::simulation::Particle3D;
-use crate::sim::Particle;
+use crate::two_d::simulation::Particle;
 use crate::sim::SimulationDimension;
 use crate::utils::despawn_entities;
 

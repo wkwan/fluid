@@ -17,7 +17,6 @@ use std::borrow::Cow;
 
 use crate::two_d::gpu_fluid::GpuState;
 use crate::three_d::simulation::{Particle3D, Fluid3DParams};
-use crate::sim::{MouseInteraction};
 use crate::constants::{BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, GPU_PARTICLE_RADIUS, GRAVITY_3D};
 
 /// Plugin for GPU-accelerated 3D Fluid Simulation
@@ -200,7 +199,6 @@ struct ExtractedFluidData3D {
 fn extract_fluid_data_3d(
     mut commands: Commands,
     fluid_params: Extract<Res<Fluid3DParams>>,
-    _mouse_interaction: Extract<Res<MouseInteraction>>,
     time: Extract<Res<Time>>,
     particles: Extract<Query<(&Particle3D, &Transform)>>,
     gpu_state: Extract<Res<GpuState>>,
