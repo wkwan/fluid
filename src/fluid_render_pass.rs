@@ -129,7 +129,7 @@ impl FluidRenderPipelineData {
 
     pub fn create_compute_pipeline(&mut self, pipeline_cache: &PipelineCache, asset_server: &AssetServer) {
         if let Some(layout) = &self.bind_group_layout {
-            let shader = asset_server.load("shaders/bilateral_filter.wgsl");
+            let shader = asset_server.load("shaders/3d/screenspace/bilateral_filter.wgsl");
             let pipeline_id = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
                 label: Some("fluid_bilateral_filter_pipeline".into()),
                 layout: vec![layout.clone()],

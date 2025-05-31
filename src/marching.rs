@@ -228,7 +228,7 @@ impl Material for RayMarchMaterial {
     }
     
     fn fragment_shader() -> ShaderRef {
-        "shaders/raymarch.wgsl".into()
+        "shaders/3d/raymarch/raymarch.wgsl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {

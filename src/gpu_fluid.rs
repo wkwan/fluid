@@ -449,7 +449,7 @@ fn prepare_bind_groups(
     
     // 1. Spatial hash pipeline
     if fluid_pipeline.spatial_hash_pipeline.is_none() && fluid_pipeline.spatial_hash_id.is_none() {
-        let shader = asset_server.load("shaders/spatial_hash.wgsl");
+        let shader = asset_server.load("shaders/2d/spatial_hash.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("spatial_hash_pipeline")),
             layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
@@ -466,7 +466,7 @@ fn prepare_bind_groups(
     
     // 2. Calculate offsets pipeline
     if fluid_pipeline.calculate_offsets_pipeline.is_none() && fluid_pipeline.calculate_offsets_id.is_none() {
-        let shader = asset_server.load("shaders/calculate_offsets.wgsl");
+        let shader = asset_server.load("shaders/2d/calculate_offsets.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("calculate_offsets_pipeline")),
             layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
@@ -483,7 +483,7 @@ fn prepare_bind_groups(
     
     // 3. Reorder pipeline
     if fluid_pipeline.reorder_pipeline.is_none() && fluid_pipeline.reorder_id.is_none() {
-        let shader = asset_server.load("shaders/reorder.wgsl");
+        let shader = asset_server.load("shaders/2d/reorder.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("reorder_pipeline")),
             layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
@@ -500,7 +500,7 @@ fn prepare_bind_groups(
     
     // 4. Reorder copyback pipeline
     if fluid_pipeline.reorder_copyback_pipeline.is_none() && fluid_pipeline.reorder_copyback_id.is_none() {
-        let shader = asset_server.load("shaders/reorder_copyback.wgsl");
+        let shader = asset_server.load("shaders/2d/reorder_copyback.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("reorder_copyback_pipeline")),
             layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
@@ -517,7 +517,7 @@ fn prepare_bind_groups(
 
     // 5. Density pressure pipeline
     if fluid_pipeline.density_pressure_pipeline.is_none() && fluid_pipeline.density_pressure_id.is_none() {
-        let shader = asset_server.load("shaders/density_pressure.wgsl");
+        let shader = asset_server.load("shaders/2d/density_pressure.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("density_pressure_pipeline")),
             layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
@@ -534,7 +534,7 @@ fn prepare_bind_groups(
 
     // 6. Forces pipeline
     if fluid_pipeline.forces_pipeline.is_none() && fluid_pipeline.forces_id.is_none() {
-        let shader = asset_server.load("shaders/forces.wgsl");
+        let shader = asset_server.load("shaders/2d/forces.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("forces_pipeline")),
             layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],
@@ -551,7 +551,7 @@ fn prepare_bind_groups(
 
     // 7. Integration pipeline
     if fluid_pipeline.integration_pipeline.is_none() && fluid_pipeline.integration_id.is_none() {
-        let shader = asset_server.load("shaders/integration.wgsl");
+        let shader = asset_server.load("shaders/2d/integration.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("integration_pipeline")),
             layout: vec![fluid_pipeline.bind_group_layout.as_ref().unwrap().clone()],

@@ -333,7 +333,7 @@ fn prepare_fluid_bind_groups_3d(
     
     // Create the compute pipelines if they don't exist
     if fluid_pipelines.spatial_hash_pipeline.is_none() {
-        let shader = asset_server.load("shaders/fluid_sim3d.wgsl");
+        let shader = asset_server.load("shaders/3d/fluid_sim.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("fluid_spatial_hash_3d_pipeline")),
             layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
@@ -348,7 +348,7 @@ fn prepare_fluid_bind_groups_3d(
     }
     
     if fluid_pipelines.density_pressure_pipeline.is_none() {
-        let shader = asset_server.load("shaders/density_pressure3d.wgsl");
+        let shader = asset_server.load("shaders/3d/density_pressure.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("fluid_density_pressure_3d_pipeline")),
             layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
@@ -363,7 +363,7 @@ fn prepare_fluid_bind_groups_3d(
     }
     
     if fluid_pipelines.pressure_force_pipeline.is_none() {
-        let shader = asset_server.load("shaders/pressure_force3d.wgsl");
+        let shader = asset_server.load("shaders/3d/pressure_force.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("fluid_pressure_force_3d_pipeline")),
             layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
@@ -378,7 +378,7 @@ fn prepare_fluid_bind_groups_3d(
     }
     
     if fluid_pipelines.viscosity_pipeline.is_none() {
-        let shader = asset_server.load("shaders/viscosity_force3d.wgsl");
+        let shader = asset_server.load("shaders/3d/viscosity_force.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("fluid_viscosity_3d_pipeline")),
             layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
@@ -393,7 +393,7 @@ fn prepare_fluid_bind_groups_3d(
     }
     
     if fluid_pipelines.update_positions_pipeline.is_none() {
-        let shader = asset_server.load("shaders/update_particles3d.wgsl");
+        let shader = asset_server.load("shaders/3d/update_particles.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("fluid_update_positions_3d_pipeline")),
             layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
@@ -508,7 +508,7 @@ fn prepare_fluid_bind_groups_3d(
     
     // Create neighbor reduction pipeline if it doesn't exist
     if fluid_pipelines.neighbor_reduction_pipeline.is_none() {
-        let shader = asset_server.load("shaders/neighbor_reduction3d.wgsl");
+        let shader = asset_server.load("shaders/3d/neighbor_reduction.wgsl");
         let pipeline_descriptor = ComputePipelineDescriptor {
             label: Some(Cow::from("fluid_neighbor_reduction_3d_pipeline")),
             layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
