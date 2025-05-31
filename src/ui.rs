@@ -5,7 +5,7 @@ use crate::simulation3d::{Fluid3DParams, MouseInteraction3D};
 use crate::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::simulation::SimulationDimension;
 use crate::marching::RayMarchingSettings;
-use crate::screen_space_fluid::ScreenSpaceFluidSettings;
+use crate::screen_space_fluid::{ScreenSpaceFluidSettings, RenderingMode};
 use crate::constants::{MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 
 pub struct UiPlugin;
@@ -228,6 +228,21 @@ fn draw_ui(
                                 // Show settings based on current mode
                                 if screen_space_active {
                                     ui.label("Screen Space Settings:");
+                                    
+                                    // Rendering Mode Dropdown
+                                    ui.horizontal(|ui| {
+                                        ui.label("Rendering Mode:");
+                                        egui::ComboBox::from_id_salt("rendering_mode")
+                                            .selected_text(format!("{:?}", screen_space_settings.rendering_mode))
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut screen_space_settings.rendering_mode, RenderingMode::Billboard, "Billboard");
+                                                ui.selectable_value(&mut screen_space_settings.rendering_mode, RenderingMode::DepthOnly, "Depth Only");
+                                                ui.selectable_value(&mut screen_space_settings.rendering_mode, RenderingMode::Filtered, "Filtered");
+                                                ui.selectable_value(&mut screen_space_settings.rendering_mode, RenderingMode::Normals, "Normals");
+                                                ui.selectable_value(&mut screen_space_settings.rendering_mode, RenderingMode::FullFluid, "Full Fluid");
+                                            });
+                                    });
+                                    
                                     ui.horizontal(|ui| {
                                         ui.label("Particle Scale:");
                                         ui.add(egui::Slider::new(&mut screen_space_settings.particle_scale, 1.0..=20.0));
