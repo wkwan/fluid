@@ -44,36 +44,41 @@ fn draw_ui(
                     ui.heading("Fluid Simulation Controls");
                     ui.separator();
                     
-                    // Terrain doodling section
-                    let terrain_response = egui::CollapsingHeader::new("Terrain Controls")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                        let button_text = if draw_lake_mode.enabled {
-                            "Terrain doodling (ON)"
-                        } else {
-                            "Terrain doodling (OFF)"
-                        };
-                        
-                        let button = if draw_lake_mode.enabled {
-                            egui::Button::new(button_text)
-                                    .fill(egui::Color32::from_rgb(100, 150, 255))
-                        } else {
-                            egui::Button::new(button_text)
-                                    .fill(egui::Color32::from_rgb(80, 80, 80))
-                        };
-                        
-                        if ui.add(button).clicked() {
-                            draw_lake_mode.enabled = !draw_lake_mode.enabled;
-                        }
-                        
-                            ui.label("Hotkey: L");
-                        if draw_lake_mode.enabled {
-                            ui.colored_label(egui::Color32::YELLOW, "Mouse forces disabled");
-                        }
-                        });
-                    if terrain_response.header_response.clicked() {
-                        ui.separator();
+                    if *sim_dim.get() == SimulationDimension::Dim3 {
+                        // Terrain doodling section
+                        let terrain_response = egui::CollapsingHeader::new("Terrain Controls")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                            let button_text = if draw_lake_mode.enabled {
+                                "Terrain doodling (ON)"
+                            } else {
+                                "Terrain doodling (OFF)"
+                            };
+                            
+                            let button = if draw_lake_mode.enabled {
+                                egui::Button::new(button_text)
+                                        .fill(egui::Color32::from_rgb(100, 150, 255))
+                            } else {
+                                egui::Button::new(button_text)
+                                        .fill(egui::Color32::from_rgb(80, 80, 80))
+                            };
+                            
+                            if ui.add(button).clicked() {
+                                draw_lake_mode.enabled = !draw_lake_mode.enabled;
+                            }
+                            
+                                ui.label("Hotkey: L");
+                            if draw_lake_mode.enabled {
+                                ui.colored_label(egui::Color32::YELLOW, "Mouse forces disabled");
+                            }
+                            });
+                            
+                            if terrain_response.header_response.clicked() {
+                                ui.separator();
+                            }
                     }
+
+
                     
                     // Simulation dimension controls
                     let sim_response = egui::CollapsingHeader::new("Simulation Mode")
