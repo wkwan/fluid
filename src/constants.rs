@@ -10,12 +10,6 @@ pub const GPU_PARTICLE_RADIUS: f32 = 5.0;
 /// Boundary dampening factor for wall collisions
 pub const BOUNDARY_DAMPENING: f32 = 0.3;
 
-/// Rest density for visualization and normalization
-pub const REST_DENSITY: f32 = 1500.0;
-
-/// Gravity acceleration (2D)
-pub const GRAVITY_2D: [f32; 2] = [0.0, -20.0];
-
 /// Gravity acceleration (3D)
 pub const GRAVITY_3D: [f32; 3] = [0.0, -40.0, 0.0];
 

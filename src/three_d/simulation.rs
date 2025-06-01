@@ -2,7 +2,6 @@ use bevy::prelude::*;
 use bevy::math::primitives::Sphere;
 use bevy::pbr::MeshMaterial3d;
 use bevy::time::{Timer, TimerMode};
-use crate::sim::SimulationDimension;
 use crate::three_d::spatial_hash::{SpatialHashResource3D};
 use rand;
 use serde::{Serialize, Deserialize};
@@ -176,23 +175,13 @@ pub fn setup_3d_environment(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     _asset_server: Res<AssetServer>,
-    query_cam: Query<(), With<Camera3d>>, // only spawn if none
     query_ground: Query<(), With<GroundPlane>>, // check if ground already exists
-    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
-        return;
-    }
-
-    if !query_cam.is_empty() {
-        return;
-    }
-
     // Add a basic directional light so we can see the spheres
     commands.spawn((
         DirectionalLight {
-            shadows_enabled: false,
-            illuminance: 20000.0,
+            shadows_enabled: true,
+            illuminance: 2000.0,
             ..default()
         },
         Transform::from_xyz(0.0, 300.0, 300.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -242,11 +231,10 @@ pub fn spawn_particles_3d(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    sim_dim: Res<State<SimulationDimension>>,
     spawn_region: Res<SpawnRegion3D>,
     existing: Query<(), With<Particle3D>>,
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 || !spawn_region.active {
+    if !spawn_region.active {
         return;
     }
 
@@ -311,14 +299,9 @@ pub fn handle_mouse_input_3d(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::three_d::camera::OrbitCamera>>,
     mut mouse_interaction_3d: ResMut<MouseInteraction3D>,
-    sim_dim: Res<State<SimulationDimension>>,
     particles: Query<&Transform, With<Particle3D>>,
     draw_lake_mode: Res<DrawLakeMode>,
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        return;
-    }
-
     // Handle mouse interaction
     if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
         // Find the closest particle to the ray to determine interaction depth
@@ -360,9 +343,9 @@ pub fn handle_mouse_input_3d(
 
     // Update mouse interaction state (disabled when Draw Lake mode is active)
     if !draw_lake_mode.enabled {
-    mouse_interaction_3d.active = mouse_buttons.pressed(MouseButton::Left) || 
-                                  mouse_buttons.pressed(MouseButton::Right);
-    mouse_interaction_3d.repel = mouse_buttons.pressed(MouseButton::Right);
+        mouse_interaction_3d.active = mouse_buttons.pressed(MouseButton::Left) || 
+                                    mouse_buttons.pressed(MouseButton::Right);
+        mouse_interaction_3d.repel = mouse_buttons.pressed(MouseButton::Right);
     } else {
         mouse_interaction_3d.active = false;
         mouse_interaction_3d.repel = false;
@@ -372,13 +355,8 @@ pub fn handle_mouse_input_3d(
 pub fn apply_external_forces_3d(
     time: Res<Time>,
     mouse_interaction_3d: Res<MouseInteraction3D>,
-    mut particles: Query<(&Transform, &mut Particle3D)>,
-    sim_dim: Res<State<SimulationDimension>>,
+    mut particles: Query<(&Transform, &mut Particle3D)>
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        return;
-    }
-
     let dt = time.delta_secs();
     
     for (transform, mut particle) in particles.iter_mut() {
@@ -416,12 +394,7 @@ pub fn apply_external_forces_3d(
 pub fn predict_positions_3d(
     time: Res<Time>,
     mut query: Query<(&mut Transform, &Particle3D)>,
-    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        return;
-    }
-    
     let dt = time.delta_secs();
     
     for (mut transform, particle) in query.iter_mut() {
@@ -433,13 +406,8 @@ pub fn predict_positions_3d(
 
 pub fn update_spatial_hash_3d(
     mut spatial_hash: ResMut<SpatialHashResource3D>,
-    particle_query: Query<(Entity, &Transform), With<Particle3D>>,
-    sim_dim: Res<State<SimulationDimension>>,
+    particle_query: Query<(Entity, &Transform), With<Particle3D>>
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
-        return;
-    }
-
     spatial_hash.spatial_hash.clear();
     
     for (entity, transform) in particle_query.iter() {
@@ -451,12 +419,7 @@ pub fn calculate_density_3d(
     mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
     spatial_hash: Res<SpatialHashResource3D>,
     params: Res<Fluid3DParams>,
-    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
-        return;
-    }
-
     let smoothing_radius = params.smoothing_radius;
     
     // Cache positions
@@ -504,13 +467,8 @@ pub fn double_density_relaxation_3d(
     fluid_params: Res<Fluid3DParams>,
     spatial_hash: Res<SpatialHashResource3D>,
     time: Res<Time>,
-    mut particle_query: Query<(Entity, &mut Transform, &mut Particle3D)>,
-    sim_dim: Res<State<SimulationDimension>>,
+    mut particle_query: Query<(Entity, &mut Transform, &mut Particle3D)>
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
-        return;
-    }
-    
     let dt = time.delta_secs();
     let dt_squared = dt * dt;
     let smoothing_radius = fluid_params.smoothing_radius;
@@ -597,13 +555,8 @@ pub fn double_density_relaxation_3d(
 
 pub fn recompute_velocities_3d(
     time: Res<Time>,
-    mut query: Query<(&Transform, &mut Particle3D)>,
-    sim_dim: Res<State<SimulationDimension>>,
+    mut query: Query<(&Transform, &mut Particle3D)>
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
-        return;
-    }
-    
     let dt = time.delta_secs();
     
     for (transform, mut particle) in query.iter_mut() {
@@ -618,12 +571,8 @@ pub fn integrate_positions_3d(
     mut particles: Query<(&mut Transform, &mut Particle3D)>,
     params: Res<Fluid3DParams>,
     spatial_hash: Res<SpatialHashResource3D>,
-    ground_query: Query<(&DeformableGround, &Transform), (With<GroundPlane>, Without<Particle3D>)>,
-    sim_dim: Res<State<SimulationDimension>>,
+    ground_query: Query<(&DeformableGround, &Transform), (With<GroundPlane>, Without<Particle3D>)>
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 {
-        return;
-    }
     let dt = time.delta_secs();
     let collision_damping = params.collision_damping;
     let particle_diameter = PARTICLE_RADIUS * 2.0;
@@ -728,13 +677,8 @@ pub fn integrate_positions_3d(
 pub fn recycle_particles_3d(
     mut commands: Commands,
     mut particles: Query<(Entity, &Transform, &mut Particle3D)>,
-    spawn_region: Res<SpawnRegion3D>,
-    sim_dim: Res<State<SimulationDimension>>,
+    spawn_region: Res<SpawnRegion3D>
 ) {
-    if sim_dim.get() != &SimulationDimension::Dim3 || !spawn_region.active {
-        return;
-    }
-
     for (entity, transform, mut particle) in particles.iter_mut() {
         if transform.translation.y < KILL_Y_THRESHOLD {
             // Reset particle to a random position in spawn region
@@ -792,14 +736,6 @@ pub fn update_particle_colors_3d(
             mat.base_color = color;
         }
     }
-    
-    // Only print debug info occasionally to avoid flooding the console
-    if count > 0 && ((time.elapsed_secs_f64() % 2.0) < 0.1) {
-        println!("3D Particles - Avg velocity: {:.2}, Max velocity: {:.2}, Using MAX_VELOCITY={:.2} for normalization", 
-                 total_magnitude / count as f32, 
-                 max_seen,
-                 MAX_VELOCITY);
-    }
 }
 
 pub fn update_mouse_indicator_3d(
@@ -807,17 +743,8 @@ pub fn update_mouse_indicator_3d(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mouse_interaction_3d: Res<MouseInteraction3D>,
-    mut indicator_query: Query<(Entity, &mut Transform), With<MouseIndicator>>,
-    sim_dim: Res<State<SimulationDimension>>,
+    mut indicator_query: Query<(Entity, &mut Transform), With<MouseIndicator>>
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        // Remove indicator if not in 3D mode
-        for (entity, _) in indicator_query.iter() {
-            commands.entity(entity).despawn();
-        }
-        return;
-    }
-
     if mouse_interaction_3d.active {
         // Update or create indicator
         if let Ok((_, mut transform)) = indicator_query.single_mut() {
@@ -867,14 +794,8 @@ pub fn spawn_duck_at_cursor(
     mut spawn_duck_ev: EventReader<SpawnDuck>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::three_d::camera::OrbitCamera>>,
-    sim_dim: Res<State<SimulationDimension>>,
     asset_server: Res<AssetServer>,
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        spawn_duck_ev.clear();
-        return;
-    }
-
     for _ in spawn_duck_ev.read() {
         // Get cursor position and convert to world space
         if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
@@ -967,13 +888,8 @@ fn spawn_rubber_duck_model(
 
 pub fn update_duck_physics(
     time: Res<Time>,
-    mut ducks: Query<(&mut Transform, &mut RubberDuck)>,
-    sim_dim: Res<State<SimulationDimension>>,
+    mut ducks: Query<(&mut Transform, &mut RubberDuck)>
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        return;
-    }
-
     let dt = time.delta_secs();
     
     for (mut transform, mut duck) in ducks.iter_mut() {
@@ -1060,13 +976,8 @@ pub fn update_duck_physics(
 
 pub fn handle_particle_duck_collisions(
     mut particles: Query<(&mut Transform, &mut Particle3D), Without<RubberDuck>>,
-    mut ducks: Query<(&Transform, &mut RubberDuck), Without<Particle3D>>,
-    sim_dim: Res<State<SimulationDimension>>,
+    mut ducks: Query<(&Transform, &mut RubberDuck), Without<Particle3D>>
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        return;
-    }
-
     for (mut particle_transform, mut particle) in particles.iter_mut() {
         for (duck_transform, mut duck) in ducks.iter_mut() {
             let particle_pos = particle_transform.translation;
@@ -1208,17 +1119,20 @@ fn create_mesh_from_vertices(vertices: &[Vec3], indices: &[u32]) -> Mesh {
     mesh
 }
 
-// Resource to track ground deformation timing
+// Resource to track ground deformation timing and last position
 #[derive(Resource)]
 pub struct GroundDeformationTimer {
     pub timer: Timer,
+    pub last_position: Option<Vec3>,
+    pub last_deform_position: Option<Vec3>,
 }
 
 impl Default for GroundDeformationTimer {
     fn default() -> Self {
         Self {
-            // Allow deformation every 50ms when holding mouse button (20 times per second)
             timer: Timer::from_seconds(0.05, TimerMode::Repeating),
+            last_position: None,
+            last_deform_position: None,
         }
     }
 }
@@ -1231,67 +1145,101 @@ pub fn handle_ground_deformation(
     mut ground_query: Query<(&mut DeformableGround, &Mesh3d, &Transform), With<GroundPlane>>,
     mut meshes: ResMut<Assets<Mesh>>,
     draw_lake_mode: Res<DrawLakeMode>,
-    sim_dim: Res<State<SimulationDimension>>,
     mut deformation_timer: ResMut<GroundDeformationTimer>,
     time: Res<Time>,
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 || !draw_lake_mode.enabled {
+    if !draw_lake_mode.enabled {
         return;
     }
-    
-    // Update the deformation timer
-    deformation_timer.timer.tick(time.delta());
-    
+
     // Check for either left or right mouse button
     let left_pressed = mouse_buttons.pressed(MouseButton::Left);
     let right_pressed = mouse_buttons.pressed(MouseButton::Right);
     
     if !left_pressed && !right_pressed {
-        // Reset timer when mouse is released so next click is immediate
-        deformation_timer.timer.reset();
+        // Reset tracking when mouse is released
+        deformation_timer.last_position = None;
+        deformation_timer.last_deform_position = None;
         return;
     }
-    
+
     // Determine deformation direction: left = emboss (down), right = extrude (up)
     let deform_up = right_pressed;
     
-    // For initial click, deform immediately. For held clicks, use timer to throttle
-    let should_deform = mouse_buttons.just_pressed(MouseButton::Left) || 
-                       mouse_buttons.just_pressed(MouseButton::Right) ||
-                       deformation_timer.timer.finished();
-    
-    if !should_deform {
-        return;
-    }
-    
-    // Reset timer for next deformation when holding
-    if (left_pressed && !mouse_buttons.just_pressed(MouseButton::Left)) ||
-       (right_pressed && !mouse_buttons.just_pressed(MouseButton::Right)) {
-        deformation_timer.timer.reset();
-    }
-    
-    if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
-        // Check if ray intersects with ground plane
+    // Get current mouse intersection point
+    let current_intersection = if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
         let ground_y = BOUNDARY_MIN.y;
-        
         if ray.direction.y.abs() > 0.001 {
             let t = (ground_y - ray.origin.y) / ray.direction.y;
             if t > 0.0 {
-                let intersection_point = ray.origin + ray.direction * t;
-                
-                // Deform the ground at this point
+                Some(ray.origin + ray.direction * t)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Update last position and check if we should deform
+    if let Some(current_pos) = current_intersection {
+        // Only tick timer when mouse is held down
+        if left_pressed || right_pressed {
+            deformation_timer.timer.tick(time.delta());
+        }
+
+        let should_deform = mouse_buttons.just_pressed(MouseButton::Left) || 
+                           mouse_buttons.just_pressed(MouseButton::Right) ||
+                           deformation_timer.timer.just_finished();
+
+        if should_deform {
+            // Get the last deformation position
+            let last_pos = deformation_timer.last_deform_position.unwrap_or(current_pos);
+            
+            // Calculate intermediate points for smooth deformation
+            let distance = (current_pos - last_pos).length();
+            let num_steps = (distance / 5.0).ceil() as i32; // One deformation every 5 units
+            
+            if num_steps > 1 {
+                // Interpolate between last and current position
+                for i in 0..=num_steps {
+                    let t = i as f32 / num_steps as f32;
+                    let interpolated_pos = last_pos.lerp(current_pos, t);
+                    
+                    // Deform the ground at interpolated point
+                    if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
+                        deform_ground_at_point(
+                            &mut deformable_ground,
+                            &mut meshes,
+                            mesh_handle,
+                            interpolated_pos,
+                            ground_transform,
+                            deform_up,
+                        );
+                    }
+                }
+            } else {
+                // Single deformation at current position
                 if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
                     deform_ground_at_point(
                         &mut deformable_ground,
                         &mut meshes,
                         mesh_handle,
-                        intersection_point,
+                        current_pos,
                         ground_transform,
                         deform_up,
                     );
                 }
             }
+            
+            // Update last deformation position
+            deformation_timer.last_deform_position = Some(current_pos);
         }
+        
+        // Always update last position
+        deformation_timer.last_position = Some(current_pos);
     }
 }
 
@@ -1527,13 +1475,8 @@ pub fn handle_draw_lake_toggle(
 
 pub fn handle_duck_spawning(
     keys: Res<ButtonInput<KeyCode>>,
-    mut spawn_duck_ev: EventWriter<SpawnDuck>,
-    sim_dim: Res<State<SimulationDimension>>,
+    mut spawn_duck_ev: EventWriter<SpawnDuck>
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        return;
-    }
-
     if keys.just_pressed(KeyCode::Space) {
         spawn_duck_ev.write(SpawnDuck);
     }
@@ -1543,13 +1486,8 @@ pub fn handle_duck_spawning(
 pub fn preset_hotkey_3d(
     keys: Res<ButtonInput<KeyCode>>,
     mut preset_mgr: ResMut<PresetManager3D>,
-    mut fluid3d_params: ResMut<Fluid3DParams>,
-    sim_dim: Res<State<SimulationDimension>>,
+    mut fluid3d_params: ResMut<Fluid3DParams>
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        return;
-    }
-
     if keys.just_pressed(KeyCode::KeyP) {
         preset_mgr.next();
         if let Some(p) = preset_mgr.current_preset() {

@@ -8,8 +8,6 @@ use bevy::{
     math::primitives::Cuboid,
 };
 use crate::three_d::simulation::Particle3D;
-use crate::two_d::simulation::Particle;
-use crate::sim::SimulationDimension;
 use crate::constants::{RAY_MARCH_BOUNDS_MIN, RAY_MARCH_BOUNDS_MAX};
 use crate::utils::despawn_entities;
 
@@ -68,9 +66,8 @@ impl Default for RayMarchingSettings {
 
 // Main system for rendering the free surface
 pub fn render_free_surface_system(
-    sim_dim: Res<State<SimulationDimension>>,
     raymarching_settings: Res<RayMarchingSettings>,
-    particles_3d: Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles_3d: Query<&Transform, With<Particle3D>>,
     mut commands: Commands,
     meshes: ResMut<Assets<Mesh>>,
     raymarch_materials: ResMut<Assets<RayMarchMaterial>>,
@@ -80,7 +77,7 @@ pub fn render_free_surface_system(
     time: Res<Time>,
 ) {
     // Only proceed if 3D mode and free surface rendering is enabled
-    if *sim_dim.get() != SimulationDimension::Dim3 || !raymarching_settings.enabled {
+    if !raymarching_settings.enabled {
         // Clean up any existing render entities
         cleanup_all_render_entities(&mut commands, &existing_mesh, &existing_volume);
         return;
@@ -95,7 +92,6 @@ pub fn render_free_surface_system(
     
     // Call existing ray marching implementation
     render_ray_march_volume(
-        sim_dim,
         raymarching_settings,
         particles_3d,
         commands,
@@ -135,13 +131,10 @@ impl Plugin for RayMarchPlugin {
             .add_plugins(MaterialPlugin::<RayMarchMaterial>::default())
             .add_systems(Update, update_ray_march_material)
             .add_systems(Update, render_free_surface_system
-                .run_if(|settings: Res<RayMarchingSettings>, sim_dim: Res<State<SimulationDimension>>| 
-                    settings.enabled && *sim_dim.get() == SimulationDimension::Dim3)
+                .run_if(|settings: Res<RayMarchingSettings>| settings.enabled)
             )
             .add_systems(Update, cleanup_free_surface_system
-                .run_if(|settings: Res<RayMarchingSettings>, sim_dim: Res<State<SimulationDimension>>| 
-                    (!settings.enabled && *sim_dim.get() == SimulationDimension::Dim3) || 
-                    *sim_dim.get() == SimulationDimension::Dim2)
+                .run_if(|settings: Res<RayMarchingSettings>| !settings.enabled)
             );
     }
 }
@@ -283,9 +276,8 @@ pub struct RayMarchVolume;
 
 // System to create/update ray marching volume
 pub fn render_ray_march_volume(
-    sim_dim: Res<State<SimulationDimension>>,
     raymarching_settings: Res<RayMarchingSettings>,
-    particles_3d: Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles_3d: Query<&Transform, With<Particle3D>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<RayMarchMaterial>>,
@@ -293,51 +285,43 @@ pub fn render_ray_march_volume(
     existing_volume: Query<Entity, With<RayMarchVolume>>,
     time: Res<Time>,
 ) {
-    match *sim_dim.get() {
-        SimulationDimension::Dim2 => {
-            // Remove existing volume in 2D mode
-            despawn_entities(&mut commands, &existing_volume);
+    if !raymarching_settings.enabled {
+        // Remove existing volume if raymarching is disabled
+        despawn_entities(&mut commands, &existing_volume);
+        return;
+    }
+
+    // Only generate volume if we have enough particles
+    let particle_count = particles_3d.iter().count();
+    
+    if particle_count < 10 {
+        // Remove existing volume if not enough particles
+        despawn_entities(&mut commands, &existing_volume);
+        return;
+    }
+
+    // Only update every 0.5 seconds to reduce flashing and improve performance
+    static mut LAST_UPDATE: f32 = 0.0;
+    let current_time = time.elapsed_secs();
+    unsafe {
+        if current_time - LAST_UPDATE < 0.5 && !existing_volume.is_empty() {
+            return; // Skip this frame
         }
-        SimulationDimension::Dim3 => {
-            if !raymarching_settings.enabled {
-                // Remove existing volume if raymarching is disabled
-                despawn_entities(&mut commands, &existing_volume);
-                return;
-            }
+        LAST_UPDATE = current_time;
+    }
 
-            // Only generate volume if we have enough particles
-            let particle_count = particles_3d.iter().count();
-            
-            if particle_count < 10 {
-                // Remove existing volume if not enough particles
-                despawn_entities(&mut commands, &existing_volume);
-                return;
-            }
-
-            // Only update every 0.5 seconds to reduce flashing and improve performance
-            static mut LAST_UPDATE: f32 = 0.0;
-            let current_time = time.elapsed_secs();
-            unsafe {
-                if current_time - LAST_UPDATE < 0.5 && !existing_volume.is_empty() {
-                    return; // Skip this frame
-                }
-                LAST_UPDATE = current_time;
-            }
-
-            // Generate density texture from particles
-            if let Some((density_texture, max_density)) = generate_density_texture(&particles_3d, &mut images) {
-                spawn_ray_march_volume(&mut commands, &mut meshes, &mut materials, density_texture, max_density, &raymarching_settings, &existing_volume);
-            } else {
-                // Remove existing volume if no density texture could be generated
-                despawn_entities(&mut commands, &existing_volume);
-            }
-        }
+    // Generate density texture from particles
+    if let Some((density_texture, max_density)) = generate_density_texture(&particles_3d, &mut images) {
+        spawn_ray_march_volume(&mut commands, &mut meshes, &mut materials, density_texture, max_density, &raymarching_settings, &existing_volume);
+    } else {
+        // Remove existing volume if no density texture could be generated
+        despawn_entities(&mut commands, &existing_volume);
     }
 }
 
 // Generate 3D density texture from particles
 fn generate_density_texture(
-    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles: &Query<&Transform, With<Particle3D>>,
     images: &mut ResMut<Assets<Image>>,
 ) -> Option<(Handle<Image>, f32)> {
     let resolution = 96u32; // Increased to 96 for even smoother surfaces

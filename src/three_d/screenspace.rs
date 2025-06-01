@@ -2,8 +2,6 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 use bevy::pbr::Material;
 use crate::three_d::simulation::Particle3D;
-use crate::two_d::simulation::Particle;
-use crate::sim::SimulationDimension;
 use crate::utils::despawn_entities;
 
 pub struct ScreenSpaceFluidPlugin;
@@ -15,13 +13,10 @@ impl Plugin for ScreenSpaceFluidPlugin {
             // .add_plugins(MaterialPlugin::<FluidNormalsMaterial>::default())
             .add_systems(Startup, setup_screen_space_resources)
             .add_systems(Update, render_screen_space_fluid_system
-                .run_if(|settings: Res<ScreenSpaceFluidSettings>, sim_dim: Res<State<SimulationDimension>>| 
-                    settings.enabled && *sim_dim.get() == SimulationDimension::Dim3)
+                .run_if(|settings: Res<ScreenSpaceFluidSettings>| settings.enabled)
             )
             .add_systems(Update, cleanup_screen_space_system
-                .run_if(|settings: Res<ScreenSpaceFluidSettings>, sim_dim: Res<State<SimulationDimension>>| 
-                    (!settings.enabled && *sim_dim.get() == SimulationDimension::Dim3) || 
-                    *sim_dim.get() == SimulationDimension::Dim2)
+                .run_if(|settings: Res<ScreenSpaceFluidSettings>| !settings.enabled)
             );
     }
 }
@@ -176,7 +171,7 @@ fn cleanup_screen_space_system(
 
 // Main rendering system - completely independent of ray marching
 pub fn render_screen_space_fluid_system(
-    particles: Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles: Query<&Transform, With<Particle3D>>,
     mut commands: Commands,
     existing_screen_space: Query<Entity, With<ScreenSpaceFluid>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -184,10 +179,8 @@ pub fn render_screen_space_fluid_system(
     circle_mesh: Option<Res<CircleMesh>>,
     settings: Res<ScreenSpaceFluidSettings>,
     camera_3d: Query<&Transform, With<Camera3d>>,
-    sim_dim: Res<State<SimulationDimension>>,
 ) {
-    // Only proceed if 3D mode and screen space rendering is enabled
-    if *sim_dim.get() != SimulationDimension::Dim3 || !settings.enabled {
+    if !settings.enabled {
         return;
     }
 
@@ -231,14 +224,12 @@ pub fn render_screen_space_fluid_system(
             render_billboard_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
         }
     }
-    
-    info!("Screen space rendering: {} particles in {:?} mode", particle_count, settings.rendering_mode);
 }
 
 // Helper function for billboard mode particles
 fn render_billboard_mode_particles(
     commands: &mut Commands,
-    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles: &Query<&Transform, With<Particle3D>>,
     mesh_handle: &Handle<Mesh>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     settings: &Res<ScreenSpaceFluidSettings>,
@@ -257,7 +248,7 @@ fn render_billboard_mode_particles(
 // Helper function for depth mode particles  
 fn render_depth_mode_particles(
     commands: &mut Commands,
-    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles: &Query<&Transform, With<Particle3D>>,
     mesh_handle: &Handle<Mesh>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     settings: &Res<ScreenSpaceFluidSettings>,
@@ -276,7 +267,7 @@ fn render_depth_mode_particles(
 // Helper function for filtered mode particles - simulates bilateral filtering with parameter-driven effects
 fn render_filtered_mode_particles(
     commands: &mut Commands,
-    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles: &Query<&Transform, With<Particle3D>>,
     mesh_handle: &Handle<Mesh>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     settings: &Res<ScreenSpaceFluidSettings>,
@@ -301,7 +292,7 @@ fn render_filtered_mode_particles(
 // Helper function for normals mode particles - simplified approach using StandardMaterial
 fn render_normals_mode_particles_simple(
     commands: &mut Commands,
-    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles: &Query<&Transform, With<Particle3D>>,
     mesh_handle: &Handle<Mesh>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     settings: &Res<ScreenSpaceFluidSettings>,
@@ -325,7 +316,7 @@ fn render_normals_mode_particles_simple(
 // Helper function for full fluid mode - combines all screen space fluid techniques
 fn render_full_fluid_particles(
     commands: &mut Commands,
-    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles: &Query<&Transform, With<Particle3D>>,
     mesh_handle: &Handle<Mesh>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     settings: &Res<ScreenSpaceFluidSettings>,
@@ -368,7 +359,7 @@ fn render_full_fluid_particles(
 // Common particle spawning function
 fn spawn_particles(
     commands: &mut Commands,
-    particles: &Query<&Transform, (With<Particle3D>, Without<Particle>)>,
+    particles: &Query<&Transform, With<Particle3D>>,
     mesh_handle: &Handle<Mesh>,
     material: Handle<StandardMaterial>,
     camera_transform: &Transform,

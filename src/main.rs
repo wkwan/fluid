@@ -2,7 +2,6 @@ use bevy::prelude::*;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin};
 use bevy_egui::EguiPlugin;
 
-mod two_d;
 mod three_d;
 
 mod ui;

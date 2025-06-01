@@ -15,7 +15,7 @@ use bevy::{
 use bytemuck::{Pod, Zeroable, cast_slice};
 use std::borrow::Cow;
 
-use crate::two_d::gpu_fluid::GpuState;
+use crate::sim::GpuState;
 use crate::three_d::simulation::{Particle3D, Fluid3DParams};
 use crate::constants::{BOUNDARY_3D_MIN, BOUNDARY_3D_MAX, GPU_PARTICLE_RADIUS, GRAVITY_3D};
 

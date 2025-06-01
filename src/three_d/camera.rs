@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
-use crate::sim::SimulationDimension;
 use crate::constants::{MIN_ZOOM, MAX_ZOOM, RESET_YAW, RESET_PITCH, RESET_DISTANCE};
 use crate::utils::despawn_entities;
 
@@ -14,13 +13,12 @@ pub struct OrbitCamera {
 
 pub fn spawn_orbit_camera(
     mut commands: Commands,
-    sim_dim: Res<State<SimulationDimension>>,
-    existing: Query<(), With<OrbitCamera>>,
+    existing: Query<Entity, With<OrbitCamera>>,
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 || !existing.is_empty() {
-        return;
-    }
-
+    println!("Spawning orbit camera");
+    // Despawn any existing cameras first
+    despawn_entities(&mut commands, &existing);
+    
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(0.0, 200.0, 400.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -34,22 +32,6 @@ pub fn spawn_orbit_camera(
     ));
 }
 
-pub fn despawn_orbit_camera(
-    mut commands: Commands,
-    sim_dim: Res<State<SimulationDimension>>,
-    query: Query<Entity, With<OrbitCamera>>,
-) {
-    if *sim_dim.get() != SimulationDimension::Dim2 {
-        return;
-    }
-    
-    let count = query.iter().count();
-    if count > 0 {
-        info!("Cleaning up {} orbit cameras in 2D mode", count);
-        despawn_entities(&mut commands, &query);
-    }
-}
-
 pub fn control_orbit_camera(
     mut query: Query<(&mut OrbitCamera, &mut Transform)>,
     mut mouse_evr: EventReader<MouseMotion>,
@@ -57,13 +39,8 @@ pub fn control_orbit_camera(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    sim_dim: Res<State<SimulationDimension>>,
     draw_lake_mode: Res<crate::three_d::simulation::DrawLakeMode>,
 ) {
-    if *sim_dim.get() != SimulationDimension::Dim3 {
-        return;
-    }
-
     let Ok((mut cam, mut transform)) = query.single_mut() else { return; };
 
     let should_rotate_camera = if draw_lake_mode.enabled {
