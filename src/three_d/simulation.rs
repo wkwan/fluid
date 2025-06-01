@@ -1122,17 +1122,17 @@ fn create_mesh_from_vertices(vertices: &[Vec3], indices: &[u32]) -> Mesh {
 // Resource to track ground deformation timing and last position
 #[derive(Resource)]
 pub struct GroundDeformationTimer {
-    pub timer: Timer,
     pub last_position: Option<Vec3>,
     pub last_deform_position: Option<Vec3>,
+    pub min_deform_distance: f32,
 }
 
 impl Default for GroundDeformationTimer {
     fn default() -> Self {
         Self {
-            timer: Timer::from_seconds(0.05, TimerMode::Repeating),
             last_position: None,
             last_deform_position: None,
+            min_deform_distance: 2.0, // Minimum distance between deformations
         }
     }
 }
@@ -1146,27 +1146,15 @@ pub fn handle_ground_deformation(
     mut meshes: ResMut<Assets<Mesh>>,
     draw_lake_mode: Res<DrawLakeMode>,
     mut deformation_timer: ResMut<GroundDeformationTimer>,
-    time: Res<Time>,
 ) {
     if !draw_lake_mode.enabled {
         return;
     }
 
-    // Check for either left or right mouse button
     let left_pressed = mouse_buttons.pressed(MouseButton::Left);
     let right_pressed = mouse_buttons.pressed(MouseButton::Right);
-    
-    if !left_pressed && !right_pressed {
-        // Reset tracking when mouse is released
-        deformation_timer.last_position = None;
-        deformation_timer.last_deform_position = None;
-        return;
-    }
-
-    // Determine deformation direction: left = emboss (down), right = extrude (up)
     let deform_up = right_pressed;
-    
-    // Get current mouse intersection point
+
     let current_intersection = if let Some((_cursor_position, ray)) = get_cursor_world_ray(&windows, &camera_q) {
         let ground_y = BOUNDARY_MIN.y;
         if ray.direction.y.abs() > 0.001 {
@@ -1185,57 +1173,59 @@ pub fn handle_ground_deformation(
 
     // Update last position and check if we should deform
     if let Some(current_pos) = current_intersection {
-        // Only tick timer when mouse is held down
         if left_pressed || right_pressed {
-            deformation_timer.timer.tick(time.delta());
-        }
-
-        let should_deform = mouse_buttons.just_pressed(MouseButton::Left) || 
-                           mouse_buttons.just_pressed(MouseButton::Right) ||
-                           deformation_timer.timer.just_finished();
-
-        if should_deform {
             // Get the last deformation position
             let last_pos = deformation_timer.last_deform_position.unwrap_or(current_pos);
             
-            // Calculate intermediate points for smooth deformation
+            // Calculate distance since last deformation
             let distance = (current_pos - last_pos).length();
-            let num_steps = (distance / 5.0).ceil() as i32; // One deformation every 5 units
             
-            if num_steps > 1 {
-                // Interpolate between last and current position
-                for i in 0..=num_steps {
-                    let t = i as f32 / num_steps as f32;
-                    let interpolated_pos = last_pos.lerp(current_pos, t);
-                    
-                    // Deform the ground at interpolated point
+            // Deform if this is a new press or we've moved far enough
+            if mouse_buttons.just_pressed(MouseButton::Left) || 
+               mouse_buttons.just_pressed(MouseButton::Right) ||
+               distance >= deformation_timer.min_deform_distance {
+                
+                // Calculate intermediate points for smooth deformation
+                let num_steps = (distance / deformation_timer.min_deform_distance).ceil() as i32;
+                
+                if num_steps > 1 {
+                    // Interpolate between last and current position
+                    for i in 0..=num_steps {
+                        let t = i as f32 / num_steps as f32;
+                        let interpolated_pos = last_pos.lerp(current_pos, t);
+                        
+                        // Deform the ground at interpolated point
+                        if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
+                            deform_ground_at_point(
+                                &mut deformable_ground,
+                                &mut meshes,
+                                mesh_handle,
+                                interpolated_pos,
+                                ground_transform,
+                                deform_up,
+                            );
+                        }
+                    }
+                } else {
+                    // Single deformation at current position
                     if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
                         deform_ground_at_point(
                             &mut deformable_ground,
                             &mut meshes,
                             mesh_handle,
-                            interpolated_pos,
+                            current_pos,
                             ground_transform,
                             deform_up,
                         );
                     }
                 }
-            } else {
-                // Single deformation at current position
-                if let Ok((mut deformable_ground, mesh_handle, ground_transform)) = ground_query.single_mut() {
-                    deform_ground_at_point(
-                        &mut deformable_ground,
-                        &mut meshes,
-                        mesh_handle,
-                        current_pos,
-                        ground_transform,
-                        deform_up,
-                    );
-                }
+                
+                // Update last deformation position
+                deformation_timer.last_deform_position = Some(current_pos);
             }
-            
-            // Update last deformation position
-            deformation_timer.last_deform_position = Some(current_pos);
+        } else {
+            // Reset last deform position when not pressing
+            deformation_timer.last_deform_position = None;
         }
         
         // Always update last position
