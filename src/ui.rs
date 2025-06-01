@@ -4,8 +4,8 @@ use crate::two_d::simulation::{FluidParams, MouseInteraction, ColorMapParams};
 use crate::three_d::simulation::{Fluid3DParams, MouseInteraction3D, DrawLakeMode};
 use crate::two_d::gpu_fluid::{GpuState, GpuPerformanceStats};
 use crate::sim::SimulationDimension;
-use crate::three_d::marching::RayMarchingSettings;
-use crate::three_d::screenspace_fluid::{ScreenSpaceFluidSettings, RenderingMode};
+use crate::three_d::raymarch::RayMarchingSettings;
+use crate::three_d::screenspace::{ScreenSpaceFluidSettings, RenderingMode};
 use crate::constants::{MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
 
 pub struct UiPlugin;

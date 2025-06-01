@@ -14,7 +14,7 @@ use sim::SimulationPlugin;
 use two_d::spawner::SpawnerPlugin;
 use two_d::gpu_fluid::GpuFluidPlugin;
 use ui::UiPlugin;
-use three_d::screenspace_fluid::ScreenSpaceFluidPlugin;
+use three_d::screenspace::ScreenSpaceFluidPlugin;
 
 fn main() {
     App::new()

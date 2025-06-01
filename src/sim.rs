@@ -43,8 +43,8 @@ impl Plugin for SimulationPlugin {
             .init_resource::<ToggleCooldown>()
             .init_resource::<PresetManager3D>()
             .init_resource::<GroundDeformationTimer>()
-            .init_resource::<crate::three_d::marching::RayMarchingSettings>()
-            .add_plugins(crate::three_d::marching::RayMarchPlugin)
+            .init_resource::<crate::three_d::raymarch::RayMarchingSettings>()
+            .add_plugins(crate::three_d::raymarch::RayMarchPlugin)
             .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
             .add_event::<SpawnDuck>()
@@ -220,7 +220,7 @@ fn handle_input(
     mut reset_ev: EventWriter<ResetSim>,
     mut fluid3d_params: ResMut<Fluid3DParams>,
     mut toggle_cooldown: ResMut<ToggleCooldown>,
-    mut raymarching_settings: ResMut<crate::three_d::marching::RayMarchingSettings>,
+    mut raymarching_settings: ResMut<crate::three_d::raymarch::RayMarchingSettings>,
     time: Res<Time>,
 ) {
     // Toggle raymarching with Q key (only in 3D mode)

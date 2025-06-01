@@ -49,11 +49,11 @@ pub struct ScreenSpaceFluidMaterial {
 
 impl Material for ScreenSpaceFluidMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/3d/screenspace/screenspace_fluid.wgsl".into()
+        "shaders/3d/screenspace/screenspace.wgsl".into()
     }
     
     fn vertex_shader() -> ShaderRef {
-        "shaders/3d/screenspace/screenspace_fluid.wgsl".into()
+        "shaders/3d/screenspace/screenspace.wgsl".into()
     }
     
     fn alpha_mode(&self) -> AlphaMode {
