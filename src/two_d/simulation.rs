@@ -1,7 +1,6 @@
 use bevy::prelude::*;
-use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use crate::two_d::spatial_hash::SpatialHash;
-use crate::two_d::gpu_fluid::{GpuState, GpuPerformanceStats};
+use crate::two_d::gpu_fluid::GpuPerformanceStats;
 use crate::constants::{GRAVITY_2D, BOUNDARY_DAMPENING, PARTICLE_RADIUS, REST_DENSITY};
 
 #[derive(Component)]

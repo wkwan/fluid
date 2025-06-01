@@ -138,8 +138,6 @@ pub struct DrawLakeMode {
 pub struct Preset3D {
     pub name: String,
     pub params: Fluid3DParams,
-    pub spawn_region: SpawnRegion3D,
-    pub seed: u64,
 }
 
 #[derive(Resource, Default)]

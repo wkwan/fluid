@@ -1,5 +1,5 @@
 use crate::constants::{
-    GRAVITY_2D, MOUSE_STRENGTH_HIGH, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM,
+    MOUSE_STRENGTH_HIGH, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM,
 };
 use crate::three_d::camera::{control_orbit_camera, spawn_orbit_camera};
 use crate::three_d::simulation::{
@@ -45,6 +45,9 @@ impl Plugin for SimulationPlugin {
             .init_resource::<GroundDeformationTimer>()
             .init_resource::<crate::three_d::raymarch::RayMarchingSettings>()
             .add_plugins(crate::three_d::raymarch::RayMarchPlugin)
+            .add_plugins(crate::two_d::spawner::SpawnerPlugin)
+            .add_plugins(crate::two_d::gpu_fluid::GpuFluidPlugin)
+            .add_plugins(crate::three_d::screenspace::ScreenSpaceFluidPlugin)
             .add_systems(Startup, setup_simulation)
             .add_event::<ResetSim>()
             .add_event::<SpawnDuck>()
@@ -178,9 +181,6 @@ struct ToggleCooldown {
 // Mark the FPS text for updating
 #[derive(Component)]
 struct FpsText;
-
-// Constants - now using shared constants from constants module
-const GRAVITY: Vec2 = Vec2::new(GRAVITY_2D[0], GRAVITY_2D[1]);
 
 // Systems
 fn setup_simulation(mut commands: Commands) {
