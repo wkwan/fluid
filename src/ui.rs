@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use crate::simulation::{Fluid3DParams, MouseInteraction3D, DrawLakeMode};
+use crate::sim::{Fluid3DParams, MouseInteraction3D, DrawLakeMode};
 use crate::raymarch::RayMarchingSettings;
 use crate::screenspace::{ScreenSpaceFluidSettings, RenderingMode};
 use crate::constants::{MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
