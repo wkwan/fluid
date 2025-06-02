@@ -10,7 +10,6 @@ mod camera;
 mod gpu_fluid;
 mod raymarch;
 mod screenspace;
-mod spatial_hash;
 
 use sim::SimulationPlugin;
 use ui::UiPlugin;
