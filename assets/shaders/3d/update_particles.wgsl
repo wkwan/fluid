@@ -10,17 +10,29 @@ struct Particle3D {
 }
 
 struct FluidParams3D {
+    // Vec4 aligned group 1
     smoothing_radius: f32,
     rest_density: f32,
     pressure_multiplier: f32,
     near_pressure_multiplier: f32,
+
+    // Vec4 aligned group 2
     viscosity: f32,
     boundary_dampening: f32,
     particle_radius: f32,
     dt: f32,
+
+    // Vec4 aligned group 3
     bounds_min: vec3<f32>,
+    _pad0: f32,
+
+    // Vec4 aligned group 4
     bounds_max: vec3<f32>,
+    _pad1: f32,
+
+    // Vec4 aligned group 5
     gravity: vec3<f32>,
+    _pad2: f32,
 }
 
 const PI: f32 = 3.14159265359;
@@ -28,11 +40,11 @@ const MAX_NEIGHBORS: u32 = 128u;
 
 // Bindings
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle3D>;
-@group(0) @binding(1) var<storage, read> params: FluidParams3D;
-@group(0) @binding(2) var<storage, read> spatial_keys_dummy: array<u32>;
-@group(0) @binding(3) var<storage, read> spatial_offsets_dummy: array<u32>;
-@group(0) @binding(4) var<storage, read> neighbor_counts: array<u32>;
-@group(0) @binding(5) var<storage, read> neighbor_indices: array<u32>;
+@group(0) @binding(1) var<uniform> params: FluidParams3D;
+@group(0) @binding(2) var<storage, read_write> spatial_keys_dummy: array<u32>;
+@group(0) @binding(3) var<storage, read_write> spatial_offsets_dummy: array<u32>;
+@group(0) @binding(4) var<storage, read_write> neighbor_counts: array<u32>;
+@group(0) @binding(5) var<storage, read_write> neighbor_indices: array<u32>;
 
 // Helper function to handle boundary collisions with damping
 fn handle_boundary_collision(pos: vec3<f32>, vel: vec3<f32>, min_bounds: vec3<f32>, max_bounds: vec3<f32>, damping: f32) -> vec3<f32> {

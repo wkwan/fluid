@@ -15,23 +15,23 @@ struct Particle3D {
 struct FluidParams3D {
     // Vec4 aligned group 1
     smoothing_radius: f32,
-    target_density: f32,
+    rest_density: f32,
     pressure_multiplier: f32,
     near_pressure_multiplier: f32,
     
     // Vec4 aligned group 2
-    viscosity_strength: f32,
+    viscosity: f32,
     boundary_dampening: f32,
     particle_radius: f32,
     dt: f32,
     
     // Vec4 aligned group 3
-    boundary_min: vec3<f32>,
-    boundary_min_padding: f32,
+    bounds_min: vec3<f32>,
+    bounds_min_padding: f32,
     
     // Vec4 aligned group 4
-    boundary_max: vec3<f32>,
-    boundary_max_padding: f32,
+    bounds_max: vec3<f32>,
+    bounds_max_padding: f32,
     
     // Vec4 aligned group 5
     gravity: vec3<f32>,
@@ -90,7 +90,10 @@ var<storage, read_write> spatial_keys: array<u32>;
 var<storage, read_write> spatial_offsets: array<atomic<u32>>;
 
 @group(0) @binding(4)
-var<storage, read_write> target_particles: array<Particle3D>;
+var<storage, read_write> neighbor_counts: array<u32>;
+
+@group(0) @binding(5)
+var<storage, read_write> neighbor_indices: array<u32>;
 
 // Helper functions
 fn get_cell_3d(position: vec3<f32>, cell_size: f32) -> vec3<i32> {

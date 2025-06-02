@@ -10,14 +10,29 @@ struct Particle3D {
 }
 
 struct FluidParams3D {
+    // Vec4 aligned group 1
     smoothing_radius: f32,
     rest_density: f32,
     pressure_multiplier: f32,
     near_pressure_multiplier: f32,
+
+    // Vec4 aligned group 2
     viscosity: f32,
-    gravity: vec3<f32>,
+    boundary_dampening: f32,
+    particle_radius: f32,
+    dt: f32,
+
+    // Vec4 aligned group 3
     bounds_min: vec3<f32>,
+    _pad0: f32,
+
+    // Vec4 aligned group 4
     bounds_max: vec3<f32>,
+    _pad1: f32,
+
+    // Vec4 aligned group 5
+    gravity: vec3<f32>,
+    _pad2: f32,
 }
 
 // Constants
@@ -40,11 +55,11 @@ struct CachedParticle3D {
 
 // Bindings
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle3D>;
-@group(0) @binding(1) var<storage, read> params: FluidParams3D;
-@group(0) @binding(2) var<storage, read> spatial_keys_dummy: array<u32>;
-@group(0) @binding(3) var<storage, read> spatial_offsets_dummy: array<u32>;
-@group(0) @binding(4) var<storage, read> neighbor_counts: array<u32>;
-@group(0) @binding(5) var<storage, read> neighbor_indices: array<u32>;
+@group(0) @binding(1) var<uniform> params: FluidParams3D;
+@group(0) @binding(2) var<storage, read_write> spatial_keys_dummy: array<u32>;
+@group(0) @binding(3) var<storage, read_write> spatial_offsets_dummy: array<u32>;
+@group(0) @binding(4) var<storage, read_write> neighbor_counts: array<u32>;
+@group(0) @binding(5) var<storage, read_write> neighbor_indices: array<u32>;
 
 // Helper functions
 fn get_cell_3d(pos: vec3<f32>, cell_size: f32) -> vec3<i32> {

@@ -13,13 +13,23 @@ mod screenspace;
 
 use sim::SimulationPlugin;
 use ui::UiPlugin;
+use gpu_fluid::GpuSim3DPlugin;
 
 fn main() {
+    // Ensure the process working directory is the project root so the default
+    // "assets" folder is found regardless of where the executable is launched
+    std::env::set_current_dir(env!("CARGO_MANIFEST_DIR")).ok();
+
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(bevy::log::LogPlugin {
+            level: bevy::log::Level::INFO,
+            filter: "wgpu=warn,naga=warn,info".into(),
+            ..default()
+        }))
         .add_plugins((
             EguiPlugin { enable_multipass_for_primary_context: false },
             UiPlugin,
+            GpuSim3DPlugin,
             SimulationPlugin,
             FrameTimeDiagnosticsPlugin::default(),
         ))

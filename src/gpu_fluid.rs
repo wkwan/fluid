@@ -5,7 +5,7 @@ use bevy::{
             BindGroup, BindGroupLayout, BindGroupLayoutEntry, BindGroupEntry, 
             BindingType, Buffer, BufferBindingType, BufferUsages, BufferDescriptor,
             BufferInitDescriptor, ComputePipeline, ComputePipelineDescriptor, 
-            PipelineCache, ShaderStages, MapMode, Maintain,
+            PipelineCache, ShaderStages, MapMode, Maintain, CachedComputePipelineId,
         },
         renderer::{RenderDevice, RenderQueue},
         RenderApp, Render, RenderSet, Extract, ExtractSchedule,
@@ -23,7 +23,13 @@ pub struct GpuSim3DPlugin;
 
 impl Plugin for GpuSim3DPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, update_gpu_particles_3d);
+        app.add_systems(Update, (
+            update_gpu_particles_3d,
+            log_gpu_frame.after(update_gpu_particles_3d),
+        ));
+        
+        // Ensure particle read-back resource exists in the main world
+        app.init_resource::<GpuParticles3D>();
         
         // Register the render app systems
         let render_app = app.sub_app_mut(RenderApp);
@@ -31,8 +37,10 @@ impl Plugin for GpuSim3DPlugin {
             .init_resource::<FluidComputePipelines3D>()
             .init_resource::<FluidBindGroups3D>()
             .add_systems(ExtractSchedule, extract_fluid_data_3d)
-            .add_systems(Render, prepare_fluid_bind_groups_3d.after(RenderSet::Prepare))
-            .add_systems(Render, queue_fluid_compute_3d.after(RenderSet::Queue));
+            .add_systems(Render, prepare_fluid_bind_groups_3d.in_set(RenderSet::Prepare))
+            .add_systems(Render, queue_fluid_compute_3d.in_set(RenderSet::Queue))
+            // Mirror the read-back resource in the render world so the compute pass can write into it
+            .init_resource::<GpuParticles3D>();
     }
 }
 
@@ -92,23 +100,23 @@ struct GpuParticleData3D {
 struct GpuFluidParams3D {
     // Vec4 aligned group 1
     smoothing_radius: f32,
-    target_density: f32,
+    rest_density: f32,
     pressure_multiplier: f32,
     near_pressure_multiplier: f32,
     
     // Vec4 aligned group 2
-    viscosity_strength: f32,
+    viscosity: f32,
     boundary_dampening: f32,
     particle_radius: f32,
     dt: f32,
     
     // Vec4 aligned group 3
-    boundary_min: [f32; 3],
-    boundary_min_padding: f32,
+    bounds_min: [f32; 3],
+    bounds_min_padding: f32,
     
     // Vec4 aligned group 4
-    boundary_max: [f32; 3],
-    boundary_max_padding: f32,
+    bounds_max: [f32; 3],
+    bounds_max_padding: f32,
     
     // Vec4 aligned group 5
     gravity: [f32; 3],
@@ -123,18 +131,31 @@ struct GpuFluidParams3D {
     mouse_active: u32,
     mouse_repel: u32,
     padding: [u32; 2],
+
+    // Additional padding to satisfy 16-byte alignment for the whole struct (GPU expects 128 bytes)
+    _pad2: [u32; 4],
 }
 
 // Resources for the render app
 #[derive(Resource)]
 struct FluidComputePipelines3D {
+    // Compiled pipelines (Some once ready)
     spatial_hash_pipeline: Option<ComputePipeline>,
     density_pressure_pipeline: Option<ComputePipeline>,
     pressure_force_pipeline: Option<ComputePipeline>,
     viscosity_pipeline: Option<ComputePipeline>,
     update_positions_pipeline: Option<ComputePipeline>,
-    bind_group_layout: Option<BindGroupLayout>,
     neighbor_reduction_pipeline: Option<ComputePipeline>,
+
+    // Pending pipeline IDs returned by the cache so we can query readiness in later frames
+    spatial_hash_id: Option<CachedComputePipelineId>,
+    density_pressure_id: Option<CachedComputePipelineId>,
+    pressure_force_id: Option<CachedComputePipelineId>,
+    viscosity_id: Option<CachedComputePipelineId>,
+    update_positions_id: Option<CachedComputePipelineId>,
+    neighbor_reduction_id: Option<CachedComputePipelineId>,
+
+    bind_group_layout: Option<BindGroupLayout>,
 }
 
 impl Default for FluidComputePipelines3D {
@@ -145,8 +166,16 @@ impl Default for FluidComputePipelines3D {
             pressure_force_pipeline: None,
             viscosity_pipeline: None,
             update_positions_pipeline: None,
-            bind_group_layout: None,
             neighbor_reduction_pipeline: None,
+
+            spatial_hash_id: None,
+            density_pressure_id: None,
+            pressure_force_id: None,
+            viscosity_id: None,
+            update_positions_id: None,
+            neighbor_reduction_id: None,
+
+            bind_group_layout: None,
         }
     }
 }
@@ -202,10 +231,7 @@ fn extract_fluid_data_3d(
     particles: Extract<Query<(&Particle3D, &Transform)>>,
     gpu_state: Extract<Res<GpuState>>,
 ) {
-    // Skip extraction if GPU is disabled
-    if !gpu_state.enabled {
-        return;
-    }
+    let particle_count = particles.iter().len();
 
     let mut positions = Vec::with_capacity(particles.iter().len());
     let mut velocities = Vec::with_capacity(particles.iter().len());
@@ -251,7 +277,7 @@ fn prepare_fluid_bind_groups_3d(
         Some(data) => data,
         None => return,
     };
-    
+        
     // Create the bind group layout if it doesn't exist
     if fluid_pipelines.bind_group_layout.is_none() {
         let layout_entries = vec![
@@ -328,81 +354,40 @@ fn prepare_fluid_bind_groups_3d(
         );
     }
     
-    // Create the compute pipelines if they don't exist
-    if fluid_pipelines.spatial_hash_pipeline.is_none() {
-        let shader = asset_server.load("shaders/3d/fluid_sim.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("fluid_spatial_hash_3d_pipeline")),
-            layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
+    // Helper macro to queue and poll pipeline once until ready
+    macro_rules! ensure_pipeline {
+        ($slot:ident, $id_slot:ident, $shader_path:expr, $label:expr) => {
+            if fluid_pipelines.$slot.is_none() {
+                // If we already queued once, try to fetch again
+                if let Some(pid) = fluid_pipelines.$id_slot {
+                    fluid_pipelines.$slot = pipeline_cache.get_compute_pipeline(pid).cloned();
+                }
+
+                // Still none? queue it the first time
+                if fluid_pipelines.$slot.is_none() && fluid_pipelines.$id_slot.is_none() {
+                    let shader = asset_server.load($shader_path);
+                    let pipeline_descriptor = ComputePipelineDescriptor {
+                        label: Some(Cow::from($label)),
+                        layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
+                        push_constant_ranges: Vec::new(),
+                        shader,
+                        shader_defs: Vec::new(),
+                        entry_point: Cow::from("main"),
+                        zero_initialize_workgroup_memory: false,
+                    };
+                    let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
+                    fluid_pipelines.$id_slot = Some(pipeline_id);
+                }
+            }
         };
-        let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipelines.spatial_hash_pipeline = pipeline_cache.get_compute_pipeline(pipeline_id).cloned();
     }
-    
-    if fluid_pipelines.density_pressure_pipeline.is_none() {
-        let shader = asset_server.load("shaders/3d/density_pressure.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("fluid_density_pressure_3d_pipeline")),
-            layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        };
-        let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipelines.density_pressure_pipeline = pipeline_cache.get_compute_pipeline(pipeline_id).cloned();
-    }
-    
-    if fluid_pipelines.pressure_force_pipeline.is_none() {
-        let shader = asset_server.load("shaders/3d/pressure_force.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("fluid_pressure_force_3d_pipeline")),
-            layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        };
-        let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipelines.pressure_force_pipeline = pipeline_cache.get_compute_pipeline(pipeline_id).cloned();
-    }
-    
-    if fluid_pipelines.viscosity_pipeline.is_none() {
-        let shader = asset_server.load("shaders/3d/viscosity_force.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("fluid_viscosity_3d_pipeline")),
-            layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        };
-        let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipelines.viscosity_pipeline = pipeline_cache.get_compute_pipeline(pipeline_id).cloned();
-    }
-    
-    if fluid_pipelines.update_positions_pipeline.is_none() {
-        let shader = asset_server.load("shaders/3d/update_particles.wgsl");
-        let pipeline_descriptor = ComputePipelineDescriptor {
-            label: Some(Cow::from("fluid_update_positions_3d_pipeline")),
-            layout: vec![fluid_pipelines.bind_group_layout.as_ref().unwrap().clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: Vec::new(),
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        };
-        let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_descriptor);
-        fluid_pipelines.update_positions_pipeline = pipeline_cache.get_compute_pipeline(pipeline_id).cloned();
-    }
+
+    ensure_pipeline!(spatial_hash_pipeline, spatial_hash_id, "shaders/3d/fluid_sim.wgsl", "fluid_spatial_hash_3d_pipeline");
+    ensure_pipeline!(density_pressure_pipeline, density_pressure_id, "shaders/3d/density_pressure.wgsl", "fluid_density_pressure_3d_pipeline");
+    ensure_pipeline!(pressure_force_pipeline, pressure_force_id, "shaders/3d/pressure_force.wgsl", "fluid_pressure_force_3d_pipeline");
+    ensure_pipeline!(viscosity_pipeline, viscosity_id, "shaders/3d/viscosity_force.wgsl", "fluid_viscosity_3d_pipeline");
+    ensure_pipeline!(update_positions_pipeline, update_positions_id, "shaders/3d/update_particles.wgsl", "fluid_update_positions_3d_pipeline");
+    ensure_pipeline!(neighbor_reduction_pipeline, neighbor_reduction_id, "shaders/3d/neighbor_reduction.wgsl", "fluid_neighbor_reduction_3d_pipeline");
     
     // Create or update buffers
     let particle_count = extracted_data.num_particles;
@@ -423,17 +408,17 @@ fn prepare_fluid_bind_groups_3d(
     // Build GPU params struct
     let gpu_params = GpuFluidParams3D {
         smoothing_radius: extracted_data.params.smoothing_radius,
-        target_density: extracted_data.params.target_density,
+        rest_density: extracted_data.params.target_density,
         pressure_multiplier: extracted_data.params.pressure_multiplier,
         near_pressure_multiplier: extracted_data.params.near_pressure_multiplier,
-        viscosity_strength: extracted_data.params.viscosity_strength,
+        viscosity: extracted_data.params.viscosity_strength,
         boundary_dampening: extracted_data.params.collision_damping,
         particle_radius: GPU_PARTICLE_RADIUS,
         dt: extracted_data.dt,
-        boundary_min: BOUNDARY_3D_MIN,
-        boundary_min_padding: 0.0,
-        boundary_max: BOUNDARY_3D_MAX,
-        boundary_max_padding: 0.0,
+        bounds_min: BOUNDARY_3D_MIN,
+        bounds_min_padding: 0.0,
+        bounds_max: BOUNDARY_3D_MAX,
+        bounds_max_padding: 0.0,
         gravity: GRAVITY_3D,
         gravity_padding: 0.0,
         mouse_position: [ 0.0, 0.0, 0.0 ],
@@ -442,6 +427,7 @@ fn prepare_fluid_bind_groups_3d(
         mouse_active: 0,
         mouse_repel: 0,
         padding: [0,0],
+        _pad2: [0,0,0,0],
     };
     
     // Create or update the parameters buffer
@@ -543,6 +529,7 @@ fn prepare_fluid_bind_groups_3d(
     }
     
     // Create bind group
+    let mut created_bg = false;
     if fluid_bind_groups.bind_group.is_none() && 
        fluid_bind_groups.particle_buffer.is_some() && 
        fluid_bind_groups.params_buffer.is_some() &&
@@ -582,6 +569,7 @@ fn prepare_fluid_bind_groups_3d(
         );
         
         fluid_bind_groups.bind_group = Some(bind_group);
+        created_bg = true;
     }
 }
 
@@ -591,6 +579,7 @@ fn queue_fluid_compute_3d(
     fluid_bind_groups: Res<FluidBindGroups3D>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
+    mut gpu_particles_res: ResMut<GpuParticles3D>,
 ) {
     // Skip if any required pipeline is missing
     if fluid_pipelines.spatial_hash_pipeline.is_none() ||
@@ -607,6 +596,7 @@ fn queue_fluid_compute_3d(
     if particle_count == 0 {
         return;
     }
+    
     
     // First batch: spatial hash + neighbor reduction
     let mut encoder = render_device.create_command_encoder(&Default::default());
@@ -677,7 +667,7 @@ fn queue_fluid_compute_3d(
         compute_pass.dispatch_workgroups((particle_count + 127) / 128, 1, 1);
     }
 
-    // Copy data to readback buffer (debug every frame for now)
+    // Copy data to readback buffer so it can be mapped on CPU
     if let Some(readback) = &fluid_bind_groups.readback_buffer {
         encoder.copy_buffer_to_buffer(
             fluid_bind_groups.particle_buffer.as_ref().unwrap(),
@@ -688,17 +678,57 @@ fn queue_fluid_compute_3d(
         );
     }
 
+    // Submit fourth batch (integration + copy)
     render_queue.submit(std::iter::once(encoder.finish()));
 
-    // Simple immediate mapping (could throttle to N frames)
+    // === Read-back phase ===
     if let Some(readback) = &fluid_bind_groups.readback_buffer {
-        // map asynchronously
         let slice = readback.slice(..);
         slice.map_async(MapMode::Read, |_| {});
-        // poll device to drive mapping
         render_device.wgpu_device().poll(Maintain::Wait);
-        let _data = slice.get_mapped_range();
-        // TODO: deserialize into GpuParticles3D for debugging
+
+        let data = slice.get_mapped_range();
+        let particles: &[GpuParticleData3D] = bytemuck::cast_slice(&data);
+
+        gpu_particles_res.positions.clear();
+        gpu_particles_res.velocities.clear();
+        gpu_particles_res.densities.clear();
+        gpu_particles_res.pressures.clear();
+        gpu_particles_res.near_densities.clear();
+        gpu_particles_res.near_pressures.clear();
+
+        gpu_particles_res.positions.reserve(particles.len());
+        gpu_particles_res.velocities.reserve(particles.len());
+        gpu_particles_res.densities.reserve(particles.len());
+        gpu_particles_res.pressures.reserve(particles.len());
+        gpu_particles_res.near_densities.reserve(particles.len());
+        gpu_particles_res.near_pressures.reserve(particles.len());
+
+        for p in particles {
+            gpu_particles_res.positions.push(Vec3::from_array(p.position));
+            gpu_particles_res.velocities.push(Vec3::from_array(p.velocity));
+            gpu_particles_res.densities.push(p.density);
+            gpu_particles_res.pressures.push(p.pressure);
+            gpu_particles_res.near_densities.push(p.near_density);
+            gpu_particles_res.near_pressures.push(p.near_pressure);
+        }
+
+        gpu_particles_res.updated = true;
+
+        // Explicitly drop the mapped slice before unmapping the buffer to satisfy wgpu validation
+        drop(data);
         readback.unmap();
+    }
+}
+
+// Simple main-world system: log once when new GPU data arrives
+fn log_gpu_frame(mut gpu_particles: ResMut<GpuParticles3D>) {
+    if gpu_particles.updated {
+        if let Some(first_pos) = gpu_particles.positions.first() {
+            info!("GPU frame received – first particle pos: {:?}", first_pos);
+        } else {
+            info!("GPU frame received – no particles");
+        }
+        gpu_particles.updated = false;
     }
 } 
