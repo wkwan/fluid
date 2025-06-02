@@ -2,12 +2,17 @@ use bevy::prelude::*;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin};
 use bevy_egui::EguiPlugin;
 
-mod three_d;
-
 mod ui;
 mod constants;
 mod sim;
 mod utils;
+
+mod camera;
+mod gpu_fluid;
+mod raymarch;
+mod screenspace;
+mod simulation;
+mod spatial_hash;
 
 use sim::SimulationPlugin;
 use ui::UiPlugin;

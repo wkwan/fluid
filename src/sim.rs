@@ -1,8 +1,8 @@
 use crate::constants::{
     MOUSE_STRENGTH_HIGH, MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM,
 };
-use crate::three_d::camera::{control_orbit_camera, spawn_orbit_camera};
-use crate::three_d::simulation::{
+use crate::camera::{control_orbit_camera, spawn_orbit_camera};
+use crate::simulation::{
     apply_external_forces_3d, calculate_density_3d, double_density_relaxation_3d,
     handle_draw_lake_toggle, handle_duck_spawning, handle_ground_deformation,
     handle_mouse_input_3d, integrate_positions_3d, predict_positions_3d, preset_hotkey_3d,
@@ -10,7 +10,7 @@ use crate::three_d::simulation::{
     update_spatial_hash_3d, update_spatial_hash_on_radius_change_3d, DrawLakeMode, Fluid3DParams,
     GroundDeformationTimer, MouseInteraction3D, PresetManager3D, SpawnDuck, SpawnRegion3D,
 };
-use crate::three_d::spatial_hash::SpatialHashResource3D;
+use crate::spatial_hash::SpatialHashResource3D;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::Camera3d;
 use bevy::prelude::*;
@@ -27,9 +27,9 @@ impl Plugin for SimulationPlugin {
             .init_resource::<PresetManager3D>()
             .init_resource::<GroundDeformationTimer>()
             .init_resource::<GpuState>()
-            .init_resource::<crate::three_d::raymarch::RayMarchingSettings>()
-            .add_plugins(crate::three_d::raymarch::RayMarchPlugin)
-            .add_plugins(crate::three_d::screenspace::ScreenSpaceFluidPlugin)
+            .init_resource::<crate::raymarch::RayMarchingSettings>()
+            .add_plugins(crate::raymarch::RayMarchPlugin)
+            .add_plugins(crate::screenspace::ScreenSpaceFluidPlugin)
             .add_systems(Startup, setup_simulation)
             .add_systems(Startup, spawn_orbit_camera)
             .add_event::<ResetSim>()
@@ -39,11 +39,11 @@ impl Plugin for SimulationPlugin {
             // ===== 3D Setup =====
             .add_systems(
                 Update,
-                crate::three_d::simulation::setup_3d_environment
+                crate::simulation::setup_3d_environment
             )
             .add_systems(
                 Update,
-                crate::three_d::simulation::spawn_particles_3d
+                crate::simulation::spawn_particles_3d
             )
             .add_systems(
                 Update,
@@ -68,19 +68,19 @@ impl Plugin for SimulationPlugin {
             // ===== 3D Duck Systems =====
             .add_systems(
                 Update,
-                crate::three_d::simulation::spawn_duck_at_cursor
+                crate::simulation::spawn_duck_at_cursor
             )
             .add_systems(
                 Update,
-                crate::three_d::simulation::update_duck_physics
+                crate::simulation::update_duck_physics
             )
             .add_systems(
                 Update,
-                crate::three_d::simulation::handle_particle_duck_collisions
+                crate::simulation::handle_particle_duck_collisions
             )
             .add_systems(
                 Update,
-                crate::three_d::simulation::update_particle_colors_3d
+                crate::simulation::update_particle_colors_3d
             )
             .add_systems(
                 Update,
@@ -153,7 +153,7 @@ fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut mouse_interaction: ResMut<MouseInteraction3D>,
     mut fluid3d_params: ResMut<Fluid3DParams>,
-    mut raymarching_settings: ResMut<crate::three_d::raymarch::RayMarchingSettings>
+    mut raymarching_settings: ResMut<crate::raymarch::RayMarchingSettings>
 ) {
     // Toggle raymarching with Q key (only in 3D mode)
     if keys.just_pressed(KeyCode::KeyQ) {
@@ -261,10 +261,10 @@ pub struct ResetSim;
 fn handle_reset_sim(
     mut ev: EventReader<ResetSim>,
     mut commands: Commands,
-    q_particles3d: Query<Entity, With<crate::three_d::simulation::Particle3D>>,
-    q_marker3d: Query<Entity, With<crate::three_d::simulation::Marker3D>>,
-    q_ducks: Query<Entity, With<crate::three_d::simulation::RubberDuck>>,
-    q_orbit: Query<Entity, With<crate::three_d::camera::OrbitCamera>>,
+    q_particles3d: Query<Entity, With<crate::simulation::Particle3D>>,
+    q_marker3d: Query<Entity, With<crate::simulation::Marker3D>>,
+    q_ducks: Query<Entity, With<crate::simulation::RubberDuck>>,
+    q_orbit: Query<Entity, With<crate::camera::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
     world: &World,
 ) {
