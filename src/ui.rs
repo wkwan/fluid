@@ -374,32 +374,23 @@ fn draw_ui(
                     
                     // Reset button
                     if ui.button("Reset to Defaults").clicked() {
-                        fluid3d_params.smoothing_radius = 1.0;
-                        fluid3d_params.target_density = 30.0;
-                        fluid3d_params.pressure_multiplier = 100.0;
-                        fluid3d_params.near_pressure_multiplier = 50.0;
-                        fluid3d_params.viscosity_strength = 0.0;
-                        fluid3d_params.collision_damping = 0.85;
+                        // Reset fluid parameters to actual defaults
+                        *fluid3d_params = Fluid3DParams::default();
+                        
+                        // Reset mouse interaction to defaults
+                        *mouse_interaction_3d = MouseInteraction3D::default();
+                        
+                        // Reset draw lake mode to defaults
+                        *draw_lake_mode = DrawLakeMode::default();
+                        
+                        // Reset GPU state to defaults
+                        *gpu_state = GpuState::default();
+                        
+                        // Reset screen space settings to defaults
+                        *screen_space_settings = ScreenSpaceFluidSettings::default();
                         
                         // Reset raymarching settings to defaults
-                        raymarching_settings.enabled = true;
-                        raymarching_settings.quality = 1.0;
-                        raymarching_settings.step_count = 32;
-                        raymarching_settings.density_multiplier = 10.0;
-                        raymarching_settings.density_threshold = 0.00001;
-                        raymarching_settings.absorption = 5.0;
-                        raymarching_settings.scattering = 1.0;
-                        raymarching_settings.light_intensity = 5.0;
-                        raymarching_settings.shadow_steps = 8;
-                        raymarching_settings.use_shadows = false;
-                        raymarching_settings.refraction_enabled = false;
-                        raymarching_settings.reflection_enabled = false;
-                        raymarching_settings.environment_sampling = false;
-                        raymarching_settings.max_bounces = 4;
-                        raymarching_settings.ior_water = 1.33;
-                        raymarching_settings.ior_air = 1.0;
-                        raymarching_settings.extinction_coefficient = Vec3::new(0.0, 0.0, 0.0);
-                        raymarching_settings.surface_smoothness = 0.5;
+                        *raymarching_settings = RayMarchingSettings::default();
                         
                         reset_ev.write(crate::sim::ResetSim);
                     }

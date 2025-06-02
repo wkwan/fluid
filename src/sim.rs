@@ -230,53 +230,36 @@ fn handle_reset_sim(
     q_ducks: Query<Entity, With<RubberDuck>>,
     q_orbit: Query<Entity, With<crate::camera::OrbitCamera>>,
     q_cam3d: Query<Entity, With<Camera3d>>,
-    world: &World,
 ) {
     if ev.is_empty() {
         return;
     }
     ev.clear();
 
-    // Safe despawn helper that ensures we don't try to despawn entities that don't exist
-    let safe_despawn = |entity: Entity, commands: &mut Commands| {
-        // Only attempt to despawn if the entity exists in the world
-        if world.get_entity(entity).is_ok() {
-            commands.entity(entity).despawn();
-        }
-    };
-
     // Log counts for debugging
     let p3d_count = q_particles3d.iter().count();
     let marker_count = q_marker3d.iter().count();
     let duck_count = q_ducks.iter().count();
     info!(
-        "Cleaning up: {}x 3D particles, {}x 3D markers, {}x ducks",
+        "Resetting simulation: {}x 3D particles, {}x 3D markers, {}x ducks",
         p3d_count, marker_count, duck_count
     );
 
-    // Always clean up all particle types and associated entities to ensure a fresh state.
+    // Collect entities to despawn to avoid iterator issues
+    let entities_to_despawn: Vec<Entity> = q_particles3d
+        .iter()
+        .chain(q_marker3d.iter())
+        .chain(q_ducks.iter())
+        .collect();
 
-    for e in q_particles3d.iter() {
-        safe_despawn(e, &mut commands);
+    let entity_count = entities_to_despawn.len();
+
+    // Despawn all collected entities
+    for entity in entities_to_despawn {
+        commands.entity(entity).despawn();
     }
 
-    for e in q_marker3d.iter() {
-        safe_despawn(e, &mut commands);
-    }
-
-    for e in q_ducks.iter() {
-        safe_despawn(e, &mut commands);
-    }
-
-    for e in q_orbit.iter() {
-        safe_despawn(e, &mut commands);
-    }
-
-    for e in q_cam3d.iter() {
-        safe_despawn(e, &mut commands);
-    }
-
-    info!("Dimension transition cleanup complete");
+    info!("Reset complete - {} entities removed", entity_count);
 }
 
 // 3D particle component
