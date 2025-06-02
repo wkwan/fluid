@@ -571,6 +571,17 @@ fn prepare_fluid_bind_groups_3d(
         fluid_bind_groups.bind_group = Some(bind_group);
         created_bg = true;
     }
+
+    // Quick status log once per frame (will quiet down when all ready)
+    if fluid_pipelines.spatial_hash_pipeline.is_some()
+        && fluid_pipelines.density_pressure_pipeline.is_some()
+        && fluid_pipelines.pressure_force_pipeline.is_some()
+        && fluid_pipelines.viscosity_pipeline.is_some()
+        && fluid_pipelines.update_positions_pipeline.is_some()
+        && fluid_bind_groups.bind_group.is_some()
+    {
+        info!("GPU pipelines ready – particle_count: {}", particle_count);
+    }
 }
 
 // Execute the compute shaders to perform the full fluid simulation on GPU
@@ -588,6 +599,15 @@ fn queue_fluid_compute_3d(
        fluid_pipelines.viscosity_pipeline.is_none() ||
        fluid_pipelines.update_positions_pipeline.is_none() ||
        fluid_bind_groups.bind_group.is_none() {
+        info!(
+            "GPU compute skipped – pipelines ready? H:{:?} D:{:?} P:{:?} V:{:?} U:{:?} BG:{}",
+            fluid_pipelines.spatial_hash_pipeline.is_some(),
+            fluid_pipelines.density_pressure_pipeline.is_some(),
+            fluid_pipelines.pressure_force_pipeline.is_some(),
+            fluid_pipelines.viscosity_pipeline.is_some(),
+            fluid_pipelines.update_positions_pipeline.is_some(),
+            fluid_bind_groups.bind_group.is_some()
+        );
         return;
     }
     

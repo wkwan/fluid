@@ -54,7 +54,8 @@ impl Plugin for SimulationPlugin {
                     integrate_positions_3d,
                     recycle_particles_3d,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(|gpu_state: Res<GpuState>| !gpu_state.enabled),
             )
             .add_systems(Update, spawn_duck_at_cursor)
             .add_systems(Update, update_duck_physics)
