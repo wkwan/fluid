@@ -56,7 +56,6 @@ impl Plugin for SimulationPlugin {
                 )
                     .chain(),
             )
-            // ===== 3D Duck Systems =====
             .add_systems(Update, spawn_duck_at_cursor)
             .add_systems(Update, update_duck_physics)
             .add_systems(Update, handle_particle_duck_collisions)
@@ -441,7 +440,7 @@ fn get_cursor_world_ray(
 }
 
 // ======================== SETUP ============================
-pub fn setup_3d_environment(
+fn setup_3d_environment(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -498,7 +497,7 @@ pub fn setup_3d_environment(
 }
 
 // ======================== SPAWNER ==========================
-pub fn spawn_particles_3d(
+fn spawn_particles_3d(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -560,7 +559,7 @@ pub fn spawn_particles_3d(
 
 // =================== PHYSICS SYSTEMS =======================
 
-pub fn handle_mouse_input_3d(
+fn handle_mouse_input_3d(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
@@ -618,7 +617,7 @@ pub fn handle_mouse_input_3d(
     }
 }
 
-pub fn apply_external_forces_3d(
+fn apply_external_forces_3d(
     time: Res<Time>,
     mouse_interaction_3d: Res<MouseInteraction3D>,
     mut particles: Query<(&Transform, &mut Particle3D)>,
@@ -662,7 +661,7 @@ pub fn apply_external_forces_3d(
     }
 }
 
-pub fn predict_positions_3d(time: Res<Time>, mut query: Query<(&mut Transform, &Particle3D)>) {
+fn predict_positions_3d(time: Res<Time>, mut query: Query<(&mut Transform, &Particle3D)>) {
     let dt = time.delta_secs();
 
     for (mut transform, particle) in query.iter_mut() {
@@ -672,7 +671,7 @@ pub fn predict_positions_3d(time: Res<Time>, mut query: Query<(&mut Transform, &
     }
 }
 
-pub fn update_spatial_hash_3d(
+fn update_spatial_hash_3d(
     mut spatial_hash: ResMut<SpatialHashResource3D>,
     particle_query: Query<(Entity, &Transform), With<Particle3D>>,
 ) {
@@ -685,7 +684,7 @@ pub fn update_spatial_hash_3d(
     }
 }
 
-pub fn calculate_density_3d(
+fn calculate_density_3d(
     mut particles_q: Query<(Entity, &Transform, &mut Particle3D)>,
     spatial_hash: Res<SpatialHashResource3D>,
     params: Res<Fluid3DParams>,
@@ -735,7 +734,7 @@ pub fn calculate_density_3d(
     }
 }
 
-pub fn double_density_relaxation_3d(
+fn double_density_relaxation_3d(
     fluid_params: Res<Fluid3DParams>,
     spatial_hash: Res<SpatialHashResource3D>,
     time: Res<Time>,
@@ -832,7 +831,7 @@ pub fn double_density_relaxation_3d(
     }
 }
 
-pub fn recompute_velocities_3d(time: Res<Time>, mut query: Query<(&Transform, &mut Particle3D)>) {
+fn recompute_velocities_3d(time: Res<Time>, mut query: Query<(&Transform, &mut Particle3D)>) {
     let dt = time.delta_secs();
 
     for (transform, mut particle) in query.iter_mut() {
@@ -842,7 +841,7 @@ pub fn recompute_velocities_3d(time: Res<Time>, mut query: Query<(&Transform, &m
     }
 }
 
-pub fn integrate_positions_3d(
+fn integrate_positions_3d(
     time: Res<Time>,
     mut particles: Query<(&mut Transform, &mut Particle3D)>,
     params: Res<Fluid3DParams>,
@@ -951,7 +950,7 @@ pub fn integrate_positions_3d(
     }
 }
 
-pub fn recycle_particles_3d(
+fn recycle_particles_3d(
     mut commands: Commands,
     mut particles: Query<(Entity, &Transform, &mut Particle3D)>,
     spawn_region: Res<SpawnRegion3D>,
@@ -980,23 +979,13 @@ pub fn recycle_particles_3d(
     }
 }
 
-pub fn update_particle_colors_3d(
+fn update_particle_colors_3d(
     mut materials: ResMut<Assets<StandardMaterial>>,
     particles: Query<(&Particle3D, &MeshMaterial3d<StandardMaterial>)>,
-    time: Res<Time>,
 ) {
-    // Debug info
-    let mut total_magnitude = 0.0;
-    let mut count = 0;
-    let mut max_seen: f32 = 0.0;
-
     for (particle, mat_handle) in particles.iter() {
         // Calculate velocity magnitude and normalize
         let velocity_magnitude = particle.velocity.length();
-        total_magnitude += velocity_magnitude;
-        count += 1;
-        max_seen = max_seen.max(velocity_magnitude);
-
         let normalized_velocity = (velocity_magnitude / MAX_VELOCITY).clamp(0.0, 1.0);
 
         // Create a blue -> green -> red gradient based on velocity
@@ -1017,7 +1006,7 @@ pub fn update_particle_colors_3d(
     }
 }
 
-pub fn update_mouse_indicator_3d(
+fn update_mouse_indicator_3d(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1066,14 +1055,13 @@ pub fn update_mouse_indicator_3d(
     }
 }
 
-pub fn spawn_duck_at_cursor(
+fn spawn_duck_at_cursor(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut spawn_duck_ev: EventReader<SpawnDuck>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
-    asset_server: Res<AssetServer>,
 ) {
     for _ in spawn_duck_ev.read() {
         // Get cursor position and convert to world space
@@ -1086,15 +1074,60 @@ pub fn spawn_duck_at_cursor(
             let camera_forward = ray.direction.normalize();
             let initial_velocity = camera_forward * 200.0; // Launch speed
 
-            // Load rubber duck model
-            spawn_rubber_duck_model(
-                &mut commands,
-                &mut meshes,
-                &mut materials,
-                &asset_server,
-                spawn_position,
-                initial_velocity,
+            // Create a yellow material for the duck
+            let duck_material = materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.9, 0.0), // Bright yellow
+                perceptual_roughness: 0.4,
+                metallic: 0.0,
+                ..default()
+            });
+
+            // Create a simple duck shape using a sphere (body) and smaller sphere (head)
+            let body_mesh = meshes.add(Sphere::new(DUCK_SIZE * 0.4).mesh().ico(3).unwrap());
+
+            // Spawn the main duck entity with initial angular velocity (much slower)
+            let initial_angular_velocity = Vec3::new(
+                (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around X axis
+                (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around Y axis
+                (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around Z axis
             );
+
+            let duck_entity = commands
+                .spawn((
+                    Transform::from_translation(spawn_position),
+                    RubberDuck {
+                        velocity: initial_velocity,
+                        angular_velocity: initial_angular_velocity,
+                        size: DUCK_SIZE,
+                    },
+                    Marker3D,
+                ))
+                .id();
+
+            // Add the body as a child
+            let body_entity = commands
+                .spawn((
+                    Mesh3d(body_mesh),
+                    MeshMaterial3d(duck_material.clone()),
+                    Transform::from_translation(Vec3::ZERO).with_scale(Vec3::new(1.2, 0.8, 1.0)), // Flatten slightly for duck body
+                ))
+                .id();
+
+            // Add a head
+            let head_mesh = meshes.add(Sphere::new(DUCK_SIZE * 0.25).mesh().ico(3).unwrap());
+
+            let head_entity = commands
+                .spawn((
+                    Mesh3d(head_mesh),
+                    MeshMaterial3d(duck_material),
+                    Transform::from_translation(Vec3::new(0.0, DUCK_SIZE * 0.3, DUCK_SIZE * 0.3)),
+                ))
+                .id();
+
+            // Attach body and head to the main duck entity
+            commands
+                .entity(duck_entity)
+                .add_children(&[body_entity, head_entity]);
 
             info!(
                 "Spawned rubber duck at position: {:?} with velocity: {:?}",
@@ -1104,75 +1137,7 @@ pub fn spawn_duck_at_cursor(
     }
 }
 
-fn spawn_rubber_duck_model(
-    commands: &mut Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
-    _asset_server: &Res<AssetServer>,
-    position: Vec3,
-    velocity: Vec3,
-) {
-    // Try to load the rubber duck model from assets
-    // For now, we'll create a simple duck-like shape using primitives
-    // This can be replaced with actual model loading when a GLTF file is available
-
-    // Create a yellow material for the duck
-    let duck_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.9, 0.0), // Bright yellow
-        perceptual_roughness: 0.4,
-        metallic: 0.0,
-        ..default()
-    });
-
-    // Create a simple duck shape using a sphere (body) and smaller sphere (head)
-    let body_mesh = meshes.add(Sphere::new(DUCK_SIZE * 0.4).mesh().ico(3).unwrap());
-
-    // Spawn the main duck entity with initial angular velocity (much slower)
-    let initial_angular_velocity = Vec3::new(
-        (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around X axis
-        (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around Y axis
-        (rand::random::<f32>() - 0.5) * 1.0, // Random rotation around Z axis
-    );
-
-    let duck_entity = commands
-        .spawn((
-            Transform::from_translation(position),
-            RubberDuck {
-                velocity,
-                angular_velocity: initial_angular_velocity,
-                size: DUCK_SIZE,
-            },
-            Marker3D,
-        ))
-        .id();
-
-    // Add the body as a child
-    let body_entity = commands
-        .spawn((
-            Mesh3d(body_mesh),
-            MeshMaterial3d(duck_material.clone()),
-            Transform::from_translation(Vec3::ZERO).with_scale(Vec3::new(1.2, 0.8, 1.0)), // Flatten slightly for duck body
-        ))
-        .id();
-
-    // Add a head
-    let head_mesh = meshes.add(Sphere::new(DUCK_SIZE * 0.25).mesh().ico(3).unwrap());
-
-    let head_entity = commands
-        .spawn((
-            Mesh3d(head_mesh),
-            MeshMaterial3d(duck_material),
-            Transform::from_translation(Vec3::new(0.0, DUCK_SIZE * 0.3, DUCK_SIZE * 0.3)),
-        ))
-        .id();
-
-    // Attach body and head to the main duck entity
-    commands
-        .entity(duck_entity)
-        .add_children(&[body_entity, head_entity]);
-}
-
-pub fn update_duck_physics(time: Res<Time>, mut ducks: Query<(&mut Transform, &mut RubberDuck)>) {
+fn update_duck_physics(time: Res<Time>, mut ducks: Query<(&mut Transform, &mut RubberDuck)>) {
     let dt = time.delta_secs();
 
     for (mut transform, mut duck) in ducks.iter_mut() {
@@ -1258,7 +1223,7 @@ pub fn update_duck_physics(time: Res<Time>, mut ducks: Query<(&mut Transform, &m
     }
 }
 
-pub fn handle_particle_duck_collisions(
+fn handle_particle_duck_collisions(
     mut particles: Query<(&mut Transform, &mut Particle3D), Without<RubberDuck>>,
     mut ducks: Query<(&Transform, &mut RubberDuck), Without<Particle3D>>,
 ) {
@@ -1433,7 +1398,7 @@ impl Default for GroundDeformationTimer {
 }
 
 // System to handle ground deformation when terrain doodling mode is active
-pub fn handle_ground_deformation(
+fn handle_ground_deformation(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
@@ -1795,7 +1760,7 @@ fn create_boundary_wireframe(
     }
 }
 
-pub fn handle_draw_lake_toggle(
+fn handle_draw_lake_toggle(
     keys: Res<ButtonInput<KeyCode>>,
     mut draw_lake_mode: ResMut<DrawLakeMode>,
 ) {
@@ -1804,7 +1769,7 @@ pub fn handle_draw_lake_toggle(
     }
 }
 
-pub fn handle_duck_spawning(
+fn handle_duck_spawning(
     keys: Res<ButtonInput<KeyCode>>,
     mut spawn_duck_ev: EventWriter<SpawnDuck>,
 ) {
@@ -1814,7 +1779,7 @@ pub fn handle_duck_spawning(
 }
 
 // Hotkey to cycle 3D presets (P key)
-pub fn preset_hotkey_3d(
+fn preset_hotkey_3d(
     keys: Res<ButtonInput<KeyCode>>,
     mut preset_mgr: ResMut<PresetManager3D>,
     mut fluid3d_params: ResMut<Fluid3DParams>,
@@ -1829,7 +1794,7 @@ pub fn preset_hotkey_3d(
 }
 
 // System to update spatial hash when smoothing radius changes in 3D
-pub fn update_spatial_hash_on_radius_change_3d(
+fn update_spatial_hash_on_radius_change_3d(
     fluid3d_params: Res<Fluid3DParams>,
     mut spatial_hash_3d: ResMut<SpatialHashResource3D>,
 ) {
