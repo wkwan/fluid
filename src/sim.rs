@@ -70,7 +70,9 @@ impl Plugin for SimulationPlugin {
             // Preset hotkey
             .add_systems(Update, preset_hotkey_3d)
             // Handle duck spawning with spacebar in 3D mode
-            .add_systems(Update, handle_duck_spawning);
+            .add_systems(Update, handle_duck_spawning)
+            // Hide CPU particles when GPU is enabled to prevent freezing
+            .add_systems(Update, hide_cpu_particles_when_gpu_enabled);
     }
 }
 
@@ -1857,5 +1859,30 @@ impl Default for SpatialHashResource3D {
         Self {
             spatial_hash: SpatialHash3D::new(35.0),
         }
+    }
+}
+
+// Hide CPU particles when GPU is enabled to prevent freezing
+fn hide_cpu_particles_when_gpu_enabled(
+    gpu_state: Res<GpuState>,
+    mut particles: Query<&mut Visibility, With<Particle3D>>,
+    time: Res<Time>,
+) {
+    // When GPU is enabled, hide CPU particles to prevent sync conflicts
+    // But wait a few frames to allow initial GPU extraction
+    let delay_frames = 5.0; // Wait 5 seconds for GPU to initialize
+    let should_hide = gpu_state.enabled && time.elapsed_secs() > delay_frames;
+    
+    for mut visibility in particles.iter_mut() {
+        *visibility = if should_hide {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
+    }
+    
+    // Log the transition
+    if gpu_state.enabled && time.elapsed_secs() > delay_frames - 0.1 && time.elapsed_secs() < delay_frames + 0.1 {
+        info!("GPU: Hiding {} CPU particles after GPU initialization", particles.iter().len());
     }
 }

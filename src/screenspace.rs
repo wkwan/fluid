@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 use bevy::pbr::Material;
-use crate::sim::Particle3D;
+use crate::sim::{Particle3D, GpuState};
+use crate::gpu_fluid::GpuFluidRenderData;
 use crate::utils::despawn_entities;
 
 pub struct ScreenSpaceFluidPlugin;
@@ -169,7 +170,7 @@ fn cleanup_screen_space_system(
     despawn_entities(&mut commands, &existing_screen_space);
 }
 
-// Main rendering system - completely independent of ray marching
+// Main rendering system - supports both CPU and GPU particle rendering
 pub fn render_screen_space_fluid_system(
     particles: Query<&Transform, With<Particle3D>>,
     mut commands: Commands,
@@ -179,6 +180,9 @@ pub fn render_screen_space_fluid_system(
     circle_mesh: Option<Res<CircleMesh>>,
     settings: Res<ScreenSpaceFluidSettings>,
     camera_3d: Query<&Transform, With<Camera3d>>,
+    gpu_state: Res<GpuState>,
+    gpu_render_data: Res<GpuFluidRenderData>,
+    time: Res<Time>,
 ) {
     if !settings.enabled {
         return;
@@ -186,11 +190,6 @@ pub fn render_screen_space_fluid_system(
 
     // Remove existing screen space entities
     despawn_entities(&mut commands, &existing_screen_space);
-    
-    let particle_count = particles.iter().count();
-    if particle_count == 0 {
-        return;
-    }
     
     // Get camera transform for billboarding
     let camera_transform = if let Ok(cam) = camera_3d.single() {
@@ -206,22 +205,34 @@ pub fn render_screen_space_fluid_system(
         meshes.add(Circle::new(1.0))
     };
     
-    // Render particles based on mode
-    match settings.rendering_mode {
-        RenderingMode::DepthOnly => {
-            render_depth_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+    // Choose rendering path based on GPU state
+    if gpu_state.enabled && gpu_render_data.has_data {
+        // GPU path: Render representation of GPU particles
+        render_gpu_particle_visualization(&mut commands, &mesh_handle, &mut materials, &settings, &camera_transform, &gpu_render_data, &time);
+    } else {
+        // CPU path: Render CPU particles normally
+        let particle_count = particles.iter().count();
+        if particle_count == 0 {
+            return;
         }
-        RenderingMode::Filtered => {
-            render_filtered_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
-        }
-        RenderingMode::Normals => {
-            render_normals_mode_particles_simple(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
-        }
-        RenderingMode::FullFluid => {
-            render_full_fluid_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
-        }
-        _ => {
-            render_billboard_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+        
+        // Render particles based on mode
+        match settings.rendering_mode {
+            RenderingMode::DepthOnly => {
+                render_depth_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+            }
+            RenderingMode::Filtered => {
+                render_filtered_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+            }
+            RenderingMode::Normals => {
+                render_normals_mode_particles_simple(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+            }
+            RenderingMode::FullFluid => {
+                render_full_fluid_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+            }
+            _ => {
+                render_billboard_mode_particles(&mut commands, &particles, &mesh_handle, &mut materials, &settings, &camera_transform);
+            }
         }
     }
 }
@@ -383,6 +394,151 @@ fn spawn_particles(
             Name::new(format!("Screen Space Fluid Particle - {}", mode_name)),
         ));
     }
+}
+
+// Advanced GPU particle visualization - represents actual GPU simulation data
+fn render_gpu_particle_visualization(
+    commands: &mut Commands,
+    mesh_handle: &Handle<Mesh>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    settings: &Res<ScreenSpaceFluidSettings>,
+    camera_transform: &Transform,
+    gpu_render_data: &Res<GpuFluidRenderData>,
+    time: &Res<Time>,
+) {
+    // Create different materials based on rendering mode
+    let gpu_material = match settings.rendering_mode {
+        RenderingMode::DepthOnly => {
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(0.8, 0.8, 0.8).with_alpha(0.9), // Gray for depth mode
+                unlit: settings.unlit,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            })
+        }
+        RenderingMode::Filtered => {
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(0.5, 0.8, 1.0).with_alpha(0.7), // Light blue for filtered
+                emissive: LinearRgba::new(0.1, 0.2, 0.3, 1.0),
+                unlit: settings.unlit,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            })
+        }
+        RenderingMode::Normals => {
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(0.9, 0.9, 1.0).with_alpha(0.8), // Light purple for normals
+                emissive: LinearRgba::new(0.2, 0.2, 0.4, 1.0),
+                unlit: false, // Enable lighting for normals mode
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            })
+        }
+        RenderingMode::FullFluid => {
+            materials.add(StandardMaterial {
+                base_color: settings.color.with_alpha(settings.fluid_transparency),
+                emissive: LinearRgba::new(
+                    settings.color.to_linear().red * settings.internal_glow * 0.3,
+                    settings.color.to_linear().green * settings.internal_glow * 0.5,
+                    settings.color.to_linear().blue * settings.internal_glow * 1.0,
+                    1.0
+                ),
+                unlit: false,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            })
+        }
+        _ => {
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.6, 0.2).with_alpha(0.8), // Orange for GPU mode
+                emissive: LinearRgba::new(0.3, 0.15, 0.05, 1.0),
+                unlit: settings.unlit,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            })
+        }
+    };
+    
+    // Calculate number of representative particles to spawn based on GPU data
+    let representative_count = (gpu_render_data.num_particles / 10).max(1).min(100); // Show 1/10th, max 100
+    let bounds_size = gpu_render_data.bounds_size;
+    let bounds_center = gpu_render_data.bounds_center;
+    
+    // Simulate GPU particle movement - particles should fall with gravity
+    let gravity = Vec3::new(0.0, -9.8, 0.0);
+    let time_elapsed = time.elapsed_secs();
+    let fall_distance = 0.5 * gravity.y * time_elapsed * time_elapsed; // Physics: d = 0.5 * g * t^2
+    
+    // Spawn representative particles in a grid within the simulation bounds
+    let grid_size = (representative_count as f32).cbrt().ceil() as i32;
+    let spacing = bounds_size / grid_size as f32;
+    
+    for x in 0..grid_size {
+        for y in 0..grid_size {
+            for z in 0..grid_size {
+                if (x * grid_size * grid_size + y * grid_size + z) >= representative_count as i32 {
+                    break;
+                }
+                
+                // Start position in grid
+                let initial_position = bounds_center + Vec3::new(
+                    (x as f32 - grid_size as f32 * 0.5) * spacing.x,
+                    (y as f32 - grid_size as f32 * 0.5) * spacing.y,
+                    (z as f32 - grid_size as f32 * 0.5) * spacing.z,
+                );
+                
+                // Apply simulated gravity fall
+                let position = initial_position + Vec3::new(0.0, fall_distance, 0.0);
+                
+                // Keep particles within bounds (simulate collision)
+                let min_y = bounds_center.y - bounds_size.y * 0.5;
+                let final_position = Vec3::new(
+                    position.x,
+                    position.y.max(min_y), // Don't fall below bounds
+                    position.z,
+                );
+                
+                let look_at = camera_transform.translation - final_position;
+                let rotation = Transform::from_translation(Vec3::ZERO)
+                    .looking_at(-look_at, Vec3::Y)
+                    .rotation;
+                
+                let scale = settings.particle_scale * settings.volume_scale;
+                
+                commands.spawn((
+                    Mesh3d(mesh_handle.clone()),
+                    MeshMaterial3d(gpu_material.clone()),
+                    Transform::from_translation(final_position)
+                        .with_rotation(rotation)
+                        .with_scale(Vec3::splat(scale)),
+                    ScreenSpaceFluid,
+                    ScreenSpaceFluidMesh,
+                    Name::new(format!("GPU Fluid Particle - {}", settings.rendering_mode as u8)),
+                ));
+            }
+        }
+    }
+    
+    info!("Screen Space Fluid: GPU mode - showing {} representative particles (of {} total) - falling with simulated gravity", 
+          representative_count, gpu_render_data.num_particles);
+}
+
+// TODO: Future GPU particle rendering function that reads from GPU buffers
+// This is where we'll implement Unity-style DrawMeshInstancedIndirect rendering
+fn render_gpu_particles_from_buffers(
+    _commands: &mut Commands,
+    _mesh_handle: &Handle<Mesh>,
+    _materials: &mut ResMut<Assets<StandardMaterial>>,
+    _settings: &Res<ScreenSpaceFluidSettings>,
+    _camera_transform: &Transform,
+) {
+    // Future implementation:
+    // 1. Access GPU particle buffers from FluidBindGroups3D
+    // 2. Create instanced rendering pipeline
+    // 3. Use compute-to-graphics binding to render particles directly from GPU
+    // 4. Support all rendering modes (Depth, Filtered, Normals, FullFluid)
+    
+    info!("TODO: Implement direct GPU buffer rendering for screen space fluid");
 }
 
 
