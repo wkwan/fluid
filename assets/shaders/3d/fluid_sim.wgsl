@@ -40,12 +40,16 @@ struct FluidParams3D {
     // Vec4 aligned group 6
     mouse_position: vec3<f32>,
     mouse_radius: f32,
-    mouse_strength: f32,
     
     // Vec4 aligned group 7
+    mouse_strength: f32,
     mouse_active: u32,
     mouse_repel: u32,
+    group6_padding: f32,
+
+    // Vec4 aligned group 8
     padding: vec2<u32>,
+    _pad2: vec2<u32>,
 }
 
 // Constants for hashing - match Unity's implementation

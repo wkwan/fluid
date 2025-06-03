@@ -35,7 +35,8 @@ impl Plugin for GpuSim3DPlugin {
             update_gpu_particles_3d,
             check_gpu_results,
             log_gpu_frame.after(update_gpu_particles_3d),
-        ));
+        )   
+            .run_if(|gpu_state: Res<GpuState>| gpu_state.enabled));
         
         app.init_resource::<GpuParticles3D>();
         app.init_resource::<GpuResultsChannel>();
@@ -58,15 +59,10 @@ impl Plugin for GpuSim3DPlugin {
 // Main update system that runs the GPU simulation
 fn update_gpu_particles_3d(
     mut particles: Query<(&mut Transform, &mut Particle3D)>,
-    gpu_state: Res<GpuState>,
     mut gpu_particles: ResMut<GpuParticles3D>,
-) {
-    // Always log this to see if system runs
-    info!("GPU: update_gpu_particles_3d called - enabled: {}, updated: {}, particles: {}", 
-        gpu_state.enabled, gpu_particles.updated, gpu_particles.positions.len());
-    
+) {    
     // Only process if GPU mode is enabled and data is updated
-    if !gpu_state.enabled || !gpu_particles.updated {
+    if !gpu_particles.updated {
         return;
     }
     
@@ -146,24 +142,26 @@ struct GpuFluidParams3D {
     gravity: [f32; 3],
     gravity_padding: f32,
     
-    // Vec4 aligned group 6
+    // Vec4 aligned group 6 - needs proper 16-byte alignment
     mouse_position: [f32; 3],
     mouse_radius: f32,
-    mouse_strength: f32,
     
-    // Vec4 aligned group 7
+    // Vec4 aligned group 7 
+    mouse_strength: f32,
     mouse_active: u32,
     mouse_repel: u32,
-    padding: [u32; 2],
+    group6_padding: f32,  // Padding to complete the 16-byte alignment
 
-    // Additional padding to satisfy 16-byte alignment for the whole struct (GPU expects 128 bytes)
-    _pad2: [u32; 4],
+    // Vec4 aligned group 8
+    padding: [u32; 2],
+    _pad2: [u32; 2],  // Additional padding to reach 144 bytes total
 }
 
 // Resources for the render app
 #[derive(Resource)]
 struct FluidComputePipelines3D {
     // Compiled pipelines (Some once ready)
+    predict_positions_pipeline: Option<ComputePipeline>,
     spatial_hash_pipeline: Option<ComputePipeline>,
     density_pressure_pipeline: Option<ComputePipeline>,
     pressure_force_pipeline: Option<ComputePipeline>,
@@ -172,6 +170,7 @@ struct FluidComputePipelines3D {
     neighbor_reduction_pipeline: Option<ComputePipeline>,
 
     // Pending pipeline IDs returned by the cache so we can query readiness in later frames
+    predict_positions_id: Option<CachedComputePipelineId>,
     spatial_hash_id: Option<CachedComputePipelineId>,
     density_pressure_id: Option<CachedComputePipelineId>,
     pressure_force_id: Option<CachedComputePipelineId>,
@@ -185,6 +184,7 @@ struct FluidComputePipelines3D {
 impl Default for FluidComputePipelines3D {
     fn default() -> Self {
         Self {
+            predict_positions_pipeline: None,
             spatial_hash_pipeline: None,
             density_pressure_pipeline: None,
             pressure_force_pipeline: None,
@@ -192,6 +192,7 @@ impl Default for FluidComputePipelines3D {
             update_positions_pipeline: None,
             neighbor_reduction_pipeline: None,
 
+            predict_positions_id: None,
             spatial_hash_id: None,
             density_pressure_id: None,
             pressure_force_id: None,
@@ -412,6 +413,7 @@ fn prepare_fluid_bind_groups_3d(
         };
     }
 
+    ensure_pipeline!(predict_positions_pipeline, predict_positions_id, "shaders/3d/predict_positions.wgsl", "fluid_predict_positions_3d_pipeline");
     ensure_pipeline!(spatial_hash_pipeline, spatial_hash_id, "shaders/3d/fluid_sim.wgsl", "fluid_spatial_hash_3d_pipeline");
     ensure_pipeline!(density_pressure_pipeline, density_pressure_id, "shaders/3d/density_pressure.wgsl", "fluid_density_pressure_3d_pipeline");
     ensure_pipeline!(pressure_force_pipeline, pressure_force_id, "shaders/3d/pressure_force.wgsl", "fluid_pressure_force_3d_pipeline");
@@ -419,30 +421,38 @@ fn prepare_fluid_bind_groups_3d(
     ensure_pipeline!(update_positions_pipeline, update_positions_id, "shaders/3d/update_particles.wgsl", "fluid_update_positions_3d_pipeline");
     ensure_pipeline!(neighbor_reduction_pipeline, neighbor_reduction_id, "shaders/3d/neighbor_reduction.wgsl", "fluid_neighbor_reduction_3d_pipeline");
     
-    // Create or update buffers
-    let particle_count = extracted_data.num_particles;
-    let mut particle_data: Vec<GpuParticleData3D> = Vec::with_capacity(particle_count);
-    for i in 0..particle_count {
-        particle_data.push(GpuParticleData3D {
-            position: extracted_data.particle_positions[i].to_array(),
+    // Initialize particle data buffer with extracted data (not zeros!)
+    let mut gpu_particle_data = Vec::with_capacity(extracted_data.num_particles);
+    for i in 0..extracted_data.num_particles {
+        gpu_particle_data.push(GpuParticleData3D {
+            position: [
+                extracted_data.particle_positions[i].x,
+                extracted_data.particle_positions[i].y,
+                extracted_data.particle_positions[i].z,
+            ],
             padding0: 0.0,
-            velocity: extracted_data.particle_velocities[i].to_array(),
+            velocity: [
+                extracted_data.particle_velocities[i].x,
+                extracted_data.particle_velocities[i].y,
+                extracted_data.particle_velocities[i].z,
+            ],
             padding1: 0.0,
             density: extracted_data.particle_densities[i],
             pressure: extracted_data.particle_pressures[i],
             near_density: extracted_data.near_densities[i],
             near_pressure: extracted_data.near_pressures[i],
-            force: [0.0, 0.0, 0.0],
+            force: [0.0, 0.0, 0.0], // Force will be computed
             padding2: 0.0,
         });
     }
     
-    // Build GPU params struct
+    // Build GPU params struct with scaled parameters for force-based integration
     let gpu_params = GpuFluidParams3D {
         smoothing_radius: extracted_data.params.smoothing_radius,
         rest_density: extracted_data.params.target_density,
-        pressure_multiplier: extracted_data.params.pressure_multiplier,
-        near_pressure_multiplier: extracted_data.params.near_pressure_multiplier,
+        // Use conservative scaling - 10x was too aggressive and caused particles to disappear
+        pressure_multiplier: extracted_data.params.pressure_multiplier, // No scaling - use original values
+        near_pressure_multiplier: extracted_data.params.near_pressure_multiplier, // No scaling
         viscosity: extracted_data.params.viscosity_strength,
         boundary_dampening: extracted_data.params.collision_damping,
         particle_radius: GPU_PARTICLE_RADIUS,
@@ -458,8 +468,9 @@ fn prepare_fluid_bind_groups_3d(
         mouse_strength: 0.0,
         mouse_active: 0,
         mouse_repel: 0,
+        group6_padding: 0.0,
         padding: [0,0],
-        _pad2: [0,0,0,0],
+        _pad2: [0,0],
     };
     
     // Create or update the parameters buffer
@@ -478,41 +489,41 @@ fn prepare_fluid_bind_groups_3d(
     }
     
     // Create or update the particle buffer
-    if fluid_bind_groups.particle_buffer.is_none() || fluid_bind_groups.num_particles != particle_count as u32 {
+    if fluid_bind_groups.particle_buffer.is_none() || fluid_bind_groups.num_particles != extracted_data.num_particles as u32 {
         fluid_bind_groups.particle_buffer = Some(render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("fluid_particle_3d_buffer"),
-            contents: cast_slice(&particle_data),
+            contents: cast_slice(&gpu_particle_data),
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
         }));
         
         // Create spatial hashing buffers with the same size
         fluid_bind_groups.spatial_keys_buffer = Some(render_device.create_buffer(&BufferDescriptor {
             label: Some("fluid_spatial_keys_3d_buffer"),
-            size: (particle_count * std::mem::size_of::<u32>()) as u64,
+            size: (extracted_data.num_particles * std::mem::size_of::<u32>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
         
         fluid_bind_groups.spatial_offsets_buffer = Some(render_device.create_buffer(&BufferDescriptor {
             label: Some("fluid_spatial_offsets_3d_buffer"),
-            size: (particle_count * std::mem::size_of::<u32>()) as u64,
+            size: (extracted_data.num_particles * std::mem::size_of::<u32>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
         
-        fluid_bind_groups.num_particles = particle_count as u32;
+        fluid_bind_groups.num_particles = extracted_data.num_particles as u32;
     } else {
         // Update existing buffer data
         render_queue.write_buffer(
             fluid_bind_groups.particle_buffer.as_ref().unwrap(),
             0,
-            cast_slice(&particle_data),
+            cast_slice(&gpu_particle_data),
         );
     }
     
     // Create or resize readback buffer (positions + velocities) for debug every N frames
-    let particle_buffer_size = (particle_count as u64) * std::mem::size_of::<GpuParticleData3D>() as u64;
-    if fluid_bind_groups.readback_buffer.is_none() || fluid_bind_groups.num_particles != particle_count as u32 {
+    let particle_buffer_size = (extracted_data.num_particles as u64) * std::mem::size_of::<GpuParticleData3D>() as u64;
+    if fluid_bind_groups.readback_buffer.is_none() || fluid_bind_groups.num_particles != extracted_data.num_particles as u32 {
         fluid_bind_groups.readback_buffer = Some(render_device.create_buffer(&BufferDescriptor {
             label: Some("fluid_readback_3d_buffer"),
             size: particle_buffer_size,
@@ -524,12 +535,12 @@ fn prepare_fluid_bind_groups_3d(
     // Create or resize neighbor buffers
     if fluid_bind_groups.neighbor_counts_buffer.is_none() || 
        fluid_bind_groups.neighbor_indices_buffer.is_none() ||
-       fluid_bind_groups.num_particles != particle_count as u32 {
+       fluid_bind_groups.num_particles != extracted_data.num_particles as u32 {
         
         // Create neighbor counts buffer
         fluid_bind_groups.neighbor_counts_buffer = Some(render_device.create_buffer(&BufferDescriptor {
             label: Some("fluid_neighbor_counts_3d_buffer"),
-            size: (particle_count * std::mem::size_of::<u32>()) as u64,
+            size: (extracted_data.num_particles * std::mem::size_of::<u32>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
@@ -538,7 +549,7 @@ fn prepare_fluid_bind_groups_3d(
         let max_neighbors = 128;
         fluid_bind_groups.neighbor_indices_buffer = Some(render_device.create_buffer(&BufferDescriptor {
             label: Some("fluid_neighbor_indices_3d_buffer"),
-            size: (particle_count * max_neighbors * std::mem::size_of::<u32>()) as u64,
+            size: (extracted_data.num_particles * max_neighbors * std::mem::size_of::<u32>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
@@ -587,7 +598,8 @@ fn prepare_fluid_bind_groups_3d(
     }
 
     // Quick status log once per frame (will quiet down when all ready)
-    if fluid_pipelines.spatial_hash_pipeline.is_some()
+    if fluid_pipelines.predict_positions_pipeline.is_some()
+        && fluid_pipelines.spatial_hash_pipeline.is_some()
         && fluid_pipelines.density_pressure_pipeline.is_some()
         && fluid_pipelines.pressure_force_pipeline.is_some()
         && fluid_pipelines.viscosity_pipeline.is_some()
@@ -595,7 +607,7 @@ fn prepare_fluid_bind_groups_3d(
         && fluid_pipelines.neighbor_reduction_pipeline.is_some()
         && fluid_bind_groups.bind_group.is_some()
     {
-        info!("GPU pipelines ready – particle_count: {}", particle_count);
+        info!("GPU pipelines ready – particle_count: {}", extracted_data.num_particles);
     }
 }
 
@@ -608,7 +620,8 @@ fn queue_fluid_compute_3d(
     channel: Res<GpuResultsChannel>,
 ) {
     // Skip if any required pipeline is missing
-    if fluid_pipelines.spatial_hash_pipeline.is_none() ||
+    if fluid_pipelines.predict_positions_pipeline.is_none() ||
+       fluid_pipelines.spatial_hash_pipeline.is_none() ||
        fluid_pipelines.density_pressure_pipeline.is_none() ||
        fluid_pipelines.pressure_force_pipeline.is_none() ||
        fluid_pipelines.viscosity_pipeline.is_none() ||
@@ -616,7 +629,8 @@ fn queue_fluid_compute_3d(
        fluid_pipelines.neighbor_reduction_pipeline.is_none() ||
        fluid_bind_groups.bind_group.is_none() {
         info!(
-            "GPU compute skipped – pipelines ready? H:{:?} D:{:?} P:{:?} V:{:?} U:{:?} N:{:?} BG:{}",
+            "GPU compute skipped – pipelines ready? P:{:?} H:{:?} D:{:?} PF:{:?} V:{:?} U:{:?} N:{:?} BG:{}",
+            fluid_pipelines.predict_positions_pipeline.is_some(),
             fluid_pipelines.spatial_hash_pipeline.is_some(),
             fluid_pipelines.density_pressure_pipeline.is_some(),
             fluid_pipelines.pressure_force_pipeline.is_some(),
@@ -635,11 +649,19 @@ fn queue_fluid_compute_3d(
     }
     
     
-    // First batch: spatial hash + neighbor reduction
+    // First batch: prediction + spatial hash + neighbor reduction (Unity approach)
     let mut encoder = render_device.create_command_encoder(&Default::default());
 
     {
-        // 1. Build spatial hash
+        // 1. Predict positions (Unity: ExternalForces kernel)
+        let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+        compute_pass.set_pipeline(fluid_pipelines.predict_positions_pipeline.as_ref().unwrap());
+        compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
+        compute_pass.dispatch_workgroups((particle_count + 127) / 128, 1, 1);
+    }
+
+    {
+        // 2. Build spatial hash using predicted positions
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
         compute_pass.set_pipeline(fluid_pipelines.spatial_hash_pipeline.as_ref().unwrap());
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
@@ -647,14 +669,14 @@ fn queue_fluid_compute_3d(
     }
 
     {
-        // 2. Neighbor reduction
+        // 3. Neighbor reduction
         let mut compute_pass = encoder.begin_compute_pass(&Default::default());
         compute_pass.set_pipeline(fluid_pipelines.neighbor_reduction_pipeline.as_ref().unwrap());
         compute_pass.set_bind_group(0, fluid_bind_groups.bind_group.as_ref().unwrap(), &[]);
         compute_pass.dispatch_workgroups((particle_count + 127) / 128, 1, 1);
     }
 
-    // Submit batch
+    // Submit first batch
     render_queue.submit(std::iter::once(encoder.finish()));
 
     // Second batch: density & pressure
@@ -785,12 +807,12 @@ fn check_gpu_results(
 
 // Simple main-world system: log once when new GPU data arrives
 fn log_gpu_frame(gpu_particles: Res<GpuParticles3D>) {
-    if gpu_particles.updated {
-        if let Some(first_pos) = gpu_particles.positions.first() {
-            info!("GPU frame received – first particle pos: {:?}", first_pos);
-        } else {
-            info!("GPU frame received – no particles");
-        }
-        // Don't reset the updated flag here - let update_gpu_particles_3d do it
-    }
+    // if gpu_particles.updated {
+    //     if let Some(first_pos) = gpu_particles.positions.first() {
+    //         info!("GPU frame received – first particle pos: {:?}", first_pos);
+    //     } else {
+    //         info!("GPU frame received – no particles");
+    //     }
+    //     // Don't reset the updated flag here - let update_gpu_particles_3d do it
+    // }
 } 

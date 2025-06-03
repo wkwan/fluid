@@ -1,12 +1,15 @@
 // Particle and parameter structs
 struct Particle3D {
     position: vec3<f32>,
+    padding0: f32,
     velocity: vec3<f32>,
+    padding1: f32,
     density: f32,
     pressure: f32,
     near_density: f32,
     near_pressure: f32,
     force: vec3<f32>,
+    padding2: f32,
 }
 
 struct FluidParams3D {
@@ -24,15 +27,29 @@ struct FluidParams3D {
 
     // Vec4 aligned group 3
     bounds_min: vec3<f32>,
-    _pad0: f32,
+    bounds_min_padding: f32,
 
     // Vec4 aligned group 4
     bounds_max: vec3<f32>,
-    _pad1: f32,
+    bounds_max_padding: f32,
 
     // Vec4 aligned group 5
     gravity: vec3<f32>,
-    _pad2: f32,
+    gravity_padding: f32,
+
+    // Vec4 aligned group 6
+    mouse_position: vec3<f32>,
+    mouse_radius: f32,
+
+    // Vec4 aligned group 7
+    mouse_strength: f32,
+    mouse_active: u32,
+    mouse_repel: u32,
+    group6_padding: f32,
+
+    // Vec4 aligned group 8
+    padding: vec2<u32>,
+    _pad2: vec2<u32>,
 }
 
 const PI: f32 = 3.14159265359;
@@ -43,79 +60,78 @@ const MAX_NEIGHBORS: u32 = 128u;
 @group(0) @binding(1) var<uniform> params: FluidParams3D;
 @group(0) @binding(2) var<storage, read_write> spatial_keys_dummy: array<u32>;
 @group(0) @binding(3) var<storage, read_write> spatial_offsets_dummy: array<u32>;
-@group(0) @binding(4) var<storage, read_write> neighbor_counts: array<u32>;
-@group(0) @binding(5) var<storage, read_write> neighbor_indices: array<u32>;
+@group(0) @binding(4) var<storage, read_write> neighbor_counts_dummy: array<u32>;
+@group(0) @binding(5) var<storage, read_write> neighbor_indices_dummy: array<u32>;
 
-// Helper function to handle boundary collisions with damping
-fn handle_boundary_collision(pos: vec3<f32>, vel: vec3<f32>, min_bounds: vec3<f32>, max_bounds: vec3<f32>, damping: f32) -> vec3<f32> {
-    var new_vel = vel;
-    
-    // X-axis boundaries
-    if (pos.x < min_bounds.x) {
-        new_vel.x = abs(new_vel.x) * damping;
-    } else if (pos.x > max_bounds.x) {
-        new_vel.x = -abs(new_vel.x) * damping;
-    }
-    
-    // Y-axis boundaries
-    if (pos.y < min_bounds.y) {
-        new_vel.y = abs(new_vel.y) * damping;
-    } else if (pos.y > max_bounds.y) {
-        new_vel.y = -abs(new_vel.y) * damping;
-    }
-    
-    // Z-axis boundaries
-    if (pos.z < min_bounds.z) {
-        new_vel.z = abs(new_vel.z) * damping;
-    } else if (pos.z > max_bounds.z) {
-        new_vel.z = -abs(new_vel.z) * damping;
-    }
-    
-    return new_vel;
+// Helper struct for collision result
+struct CollisionResult {
+    position: vec3<f32>,
+    velocity: vec3<f32>,
 }
 
-// Main compute shader for updating particle positions
-@compute @workgroup_size(128)
+// Unity-style collision resolution
+fn resolve_collisions(pos: vec3<f32>, vel: vec3<f32>) -> CollisionResult {
+    var new_pos = pos;
+    var new_vel = vel;
+    
+    // Boundary collisions with damping
+    // X-axis
+    if new_pos.x < params.bounds_min.x + params.particle_radius {
+        new_pos.x = params.bounds_min.x + params.particle_radius;
+        new_vel.x = -new_vel.x * params.boundary_dampening;
+    } else if new_pos.x > params.bounds_max.x - params.particle_radius {
+        new_pos.x = params.bounds_max.x - params.particle_radius;
+        new_vel.x = -new_vel.x * params.boundary_dampening;
+    }
+    
+    // Y-axis
+    if new_pos.y < params.bounds_min.y + params.particle_radius {
+        new_pos.y = params.bounds_min.y + params.particle_radius;
+        new_vel.y = -new_vel.y * params.boundary_dampening;
+    } else if new_pos.y > params.bounds_max.y - params.particle_radius {
+        new_pos.y = params.bounds_max.y - params.particle_radius;
+        new_vel.y = -new_vel.y * params.boundary_dampening;
+    }
+    
+    // Z-axis
+    if new_pos.z < params.bounds_min.z + params.particle_radius {
+        new_pos.z = params.bounds_min.z + params.particle_radius;
+        new_vel.z = -new_vel.z * params.boundary_dampening;
+    } else if new_pos.z > params.bounds_max.z - params.particle_radius {
+        new_pos.z = params.bounds_max.z - params.particle_radius;
+        new_vel.z = -new_vel.z * params.boundary_dampening;
+    }
+    
+    return CollisionResult(new_pos, new_vel);
+}
+
+@compute @workgroup_size(128, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let particle_idx = global_id.x;
-    if (particle_idx >= arrayLength(&particles)) {
+    let index = global_id.x;
+    if index >= arrayLength(&particles) {
         return;
     }
     
-    var particle = particles[particle_idx];
+    var particle = particles[index];
     
-    // Apply forces and update position using Verlet integration
-    let dt = params.dt; // Use dynamic time step from parameters
-    let dt2 = dt * dt;
+    // Unity approach: Get original position from stored value in force field
+    // (In prediction step, we stored original position there)
+    let original_position = particle.force; // This was set in predict_positions.wgsl
     
-    // Update velocity with forces
-    particle.velocity = particle.velocity + particle.force * dt;
+    // Integrate: pos = original_pos + velocity * dt  
+    // This matches Unity's: pos += vel * deltaTime;
+    var new_pos = original_position + particle.velocity * params.dt;
+    var new_vel = particle.velocity;
     
-    // Add gravity
-    particle.velocity = particle.velocity + params.gravity * dt;
-    
-    // Update position
-    particle.position = particle.position + particle.velocity * dt;
-    
-    // Handle boundary collisions
-    particle.velocity = handle_boundary_collision(
-        particle.position,
-        particle.velocity,
-        params.bounds_min,
-        params.bounds_max,
-        params.boundary_dampening
-    );
-    
-    // Clamp position to bounds
-    particle.position = clamp(
-        particle.position,
-        params.bounds_min,
-        params.bounds_max
-    );
-    
-    // Reset force for next frame
-    particle.force = vec3<f32>(0.0);
+    // Resolve collisions
+    let collision_result = resolve_collisions(new_pos, new_vel);
+    new_pos = collision_result.position;
+    new_vel = collision_result.velocity;
     
     // Update particle
-    particles[particle_idx] = particle;
+    particle.position = new_pos;
+    particle.velocity = new_vel;
+    particle.force = vec3<f32>(0.0); // Reset force for next frame
+    
+    particles[index] = particle;
 } 

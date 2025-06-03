@@ -33,6 +33,20 @@ struct FluidParams3D {
     // Vec4 aligned group 5
     gravity: vec3<f32>,
     _pad2: f32,
+
+    // Vec4 aligned group 6
+    mouse_position: vec3<f32>,
+    mouse_radius: f32,
+
+    // Vec4 aligned group 7
+    mouse_strength: f32,
+    mouse_active: u32,
+    mouse_repel: u32,
+    group6_padding: f32,
+
+    // Vec4 aligned group 8
+    padding: vec2<u32>,
+    _pad3: vec2<u32>,
 }
 
 // Constants
@@ -88,23 +102,59 @@ fn key_from_hash(hash: u32, num_cells: u32) -> u32 {
     return hash % num_cells;
 }
 
+// Unity-style derivative kernels with safety checks
+fn density_derivative(distance: f32, radius: f32) -> f32 {
+    if distance >= radius || distance <= 0.001 || radius <= 0.0 {
+        return 0.0;
+    }
+    let h = radius;
+    let h2 = h * h;
+    let h4 = h2 * h2;
+    let h9 = h4 * h4 * h;
+    if h9 <= 0.0 {
+        return 0.0;
+    }
+    let scale = -12.0 / (PI * h9);
+    let v = h - distance;
+    return scale * v;
+}
+
+fn near_density_derivative(distance: f32, radius: f32) -> f32 {
+    if distance >= radius || distance <= 0.001 || radius <= 0.0 {
+        return 0.0;
+    }
+    let h = radius;
+    let h2 = h * h;
+    let h3 = h2 * h;
+    let h9 = h3 * h3 * h3;
+    if h9 <= 0.0 {
+        return 0.0;
+    }
+    let scale = -30.0 / (PI * h9);
+    let v = h - distance;
+    return scale * v * v;
+}
+
 fn spiky_kernel_derivative(r: vec3<f32>, h: f32) -> vec3<f32> {
     let r_len = length(r);
-    if (r_len >= h || r_len < 0.0001) {
+    if r_len >= h || r_len <= 0.001 || h <= 0.0 {
         return vec3<f32>(0.0);
     }
     
     let h2 = h * h;
-    let h3 = h2 * h;
-    let h4 = h3 * h;
-    let h5 = h4 * h;
+    let h6 = h2 * h2 * h2;
+    if h6 <= 0.0 {
+        return vec3<f32>(0.0);
+    }
     
-    let coef = -45.0 / (PI * h5);
-    let h_r = h - r_len;
-    return coef * h_r * h_r * normalize(r);
+    let scale = -45.0 / (PI * h6);
+    let v = h - r_len;
+    let v2 = v * v;
+    let direction = r / r_len; // Safe since r_len > 0.001
+    return direction * scale * v2;
 }
 
-// Main compute shader for pressure force calculation
+// Main compute shader for pressure force calculation - Unity style with safety checks
 @compute @workgroup_size(128)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let particle_idx = global_id.x;
@@ -113,31 +163,69 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     
     var particle = particles[particle_idx];
-    var force = vec3<f32>(0.0);
+    var pressure_force = vec3<f32>(0.0);
+    
+    // Safety check - ensure particle has valid density
+    if particle.density <= 0.001 {
+        particle.density = 0.1; // Prevent division by zero
+    }
     
     // Get number of neighbors for this particle
     let num_neighbors = neighbor_counts[particle_idx];
     
-    // Calculate pressure forces from neighbors
+    // Calculate pressure forces from neighbors using Unity approach
     for (var i = 0u; i < num_neighbors; i = i + 1u) {
         let neighbor_idx = neighbor_indices[particle_idx * MAX_NEIGHBORS + i];
-        let neighbor = particles[neighbor_idx];
+        if neighbor_idx >= arrayLength(&particles) || neighbor_idx == particle_idx {
+            continue; // Skip invalid or self neighbors
+        }
         
-        let r = particle.position - neighbor.position;
-        let r_len = length(r);
+        var neighbor = particles[neighbor_idx];
         
-        if (r_len < params.smoothing_radius && r_len > 0.0001) {
-            let pressure_force = -spiky_kernel_derivative(r, params.smoothing_radius) * 
-                (particle.pressure + neighbor.pressure) / (2.0 * neighbor.density);
+        // Safety check for neighbor density
+        if neighbor.density <= 0.001 {
+            neighbor.density = 0.1;
+        }
+        
+        let offset = particle.position - neighbor.position;
+        let distance = length(offset);
+        
+        if distance > 0.001 && distance < params.smoothing_radius {
+            // Calculate shared pressure (Unity style)
+            let shared_pressure = (particle.pressure + neighbor.pressure) * 0.5;
+            let shared_near_pressure = (particle.near_pressure + neighbor.near_pressure) * 0.5;
             
-            let near_pressure_force = -spiky_kernel_derivative(r, params.smoothing_radius) * 
-                (particle.near_pressure + neighbor.near_pressure) / (2.0 * neighbor.near_density);
+            // Calculate direction (safe since distance > 0.001)
+            let direction = offset / distance;
             
-            force = force + pressure_force + near_pressure_force;
+            // Calculate force components
+            let pressure_grad = density_derivative(distance, params.smoothing_radius);
+            let near_pressure_grad = near_density_derivative(distance, params.smoothing_radius);
+            
+            // Combine forces with safety scaling
+            let force_magnitude = (shared_pressure * pressure_grad + shared_near_pressure * near_pressure_grad) / particle.density;
+            let force = direction * force_magnitude;
+            
+            // Clamp force to prevent explosion
+            let max_force = 100.0;
+            let force_mag = length(force);
+            if force_mag > max_force {
+                pressure_force += normalize(force) * max_force;
+            } else {
+                pressure_force += force;
+            }
         }
     }
     
-    // Update particle force
-    particle.force = force;
+    // Apply pressure force to velocity (Unity approach: direct velocity modification)
+    particle.velocity += pressure_force * params.dt;
+    
+    // Safety clamp final velocity
+    let max_velocity = 50.0;
+    let vel_magnitude = length(particle.velocity);
+    if vel_magnitude > max_velocity {
+        particle.velocity = normalize(particle.velocity) * max_velocity;
+    }
+    
     particles[particle_idx] = particle;
 } 

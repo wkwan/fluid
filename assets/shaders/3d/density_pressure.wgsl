@@ -35,6 +35,20 @@ struct FluidParams3D {
     // Vec4 aligned group 5
     gravity: vec3<f32>,
     _pad2: f32,
+
+    // Vec4 aligned group 6
+    mouse_position: vec3<f32>,
+    mouse_radius: f32,
+
+    // Vec4 aligned group 7
+    mouse_strength: f32,
+    mouse_active: u32,
+    mouse_repel: u32,
+    group6_padding: f32,
+
+    // Vec4 aligned group 8
+    padding: vec2<u32>,
+    _pad3: vec2<u32>,
 }
 
 const PI: f32 = 3.14159265359;
@@ -93,25 +107,59 @@ fn key_from_hash(hash: u32, table_size: u32) -> u32 {
     return hash % table_size;
 }
 
-// Smoothing kernel functions
+// Smoothing kernel functions - match Unity's implementation with safety checks
 fn spiky_kernel_pow2(distance: f32, radius: f32) -> f32 {
+    if distance >= radius || distance <= 0.0 || radius <= 0.0 {
+        return 0.0;
+    }
     let h = radius;
     let h2 = h * h;
     let h4 = h2 * h2;
     let h9 = h4 * h4 * h;
+    if h9 <= 0.0 {
+        return 0.0;
+    }
     let scale = 6.0 / (PI * h9);
     let v = h - distance;
     return scale * v * v;
 }
 
 fn spiky_kernel_pow3(distance: f32, radius: f32) -> f32 {
+    if distance >= radius || distance <= 0.0 || radius <= 0.0 {
+        return 0.0;
+    }
     let h = radius;
     let h2 = h * h;
     let h3 = h2 * h;
     let h9 = h3 * h3 * h3;
+    if h9 <= 0.0 {
+        return 0.0;
+    }
     let scale = 10.0 / (PI * h9);
     let v = h - distance;
     return scale * v * v * v;
+}
+
+// Unity-style density kernel with safety checks
+fn density_kernel(distance: f32, radius: f32) -> f32 {
+    if distance >= radius || distance <= 0.0 || radius <= 0.0 {
+        return 0.0;
+    }
+    let h = radius;
+    let h2 = h * h;
+    let h6 = h2 * h2 * h2;
+    if h6 <= 0.0 {
+        return 0.0;
+    }
+    let scale = 315.0 / (64.0 * PI * h6);
+    let v = h - distance;
+    let v2 = v * v;
+    return scale * v2 * v2;
+}
+
+// Unity-style near density kernel  
+fn near_density_kernel(distance: f32, radius: f32) -> f32 {
+    return spiky_kernel_pow3(distance, radius);
 }
 
 fn poly6_kernel(r: vec3<f32>, h: f32) -> f32 {
@@ -132,7 +180,7 @@ fn poly6_kernel(r: vec3<f32>, h: f32) -> f32 {
     return coef * h_r * h_r * h_r;
 }
 
-// Main compute shader for density and pressure calculation
+// Main compute shader for density and pressure calculation with safety checks
 @compute @workgroup_size(128)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let particle_idx = global_id.x;
@@ -147,34 +195,44 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Get number of neighbors for this particle
     let num_neighbors = neighbor_counts[particle_idx];
     
-    // Calculate densities from neighbors
+    // Calculate densities from neighbors using Unity approach
     for (var i = 0u; i < num_neighbors; i = i + 1u) {
         let neighbor_idx = neighbor_indices[particle_idx * MAX_NEIGHBORS + i];
+        if neighbor_idx >= arrayLength(&particles) {
+            continue; // Skip invalid neighbors
+        }
         let neighbor = particles[neighbor_idx];
         
-        let r = particle.position - neighbor.position;
-        let r_len = length(r);
+        let offset = particle.position - neighbor.position;
+        let distance = length(offset);
         
-        if (r_len < params.smoothing_radius && r_len > 0.0001) {
-            let kernel = poly6_kernel(r, params.smoothing_radius);
-            density = density + kernel;
-            near_density = near_density + kernel * kernel;
+        // Safety check for distance
+        if distance < 0.001 {
+            // Self or very close particle
+            density += params.rest_density;
+            near_density += params.rest_density;
+        } else {
+            // Add contributions from valid neighbors
+            let density_contrib = density_kernel(distance, params.smoothing_radius);
+            let near_density_contrib = spiky_kernel_pow3(distance, params.smoothing_radius);
+            
+            density += density_contrib;
+            near_density += near_density_contrib;
         }
     }
     
-    // Add self-contribution
-    density = density + poly6_kernel(vec3<f32>(0.0), params.smoothing_radius);
-    near_density = near_density + poly6_kernel(vec3<f32>(0.0), params.smoothing_radius) * 
-        poly6_kernel(vec3<f32>(0.0), params.smoothing_radius);
+    // Safety checks for density calculations
+    density = max(density, 0.1); // Prevent zero density
+    near_density = max(near_density, 0.0);
     
-    // Calculate pressure
-    let pressure = max(0.0, params.pressure_multiplier * (density - params.rest_density));
-    let near_pressure = max(0.0, params.near_pressure_multiplier * near_density);
+    // Calculate pressures with safety checks
+    let density_error = density - params.rest_density;
+    particle.pressure = max(density_error * params.pressure_multiplier, 0.0);
+    particle.near_pressure = near_density * params.near_pressure_multiplier;
     
-    // Update particle
+    // Store results
     particle.density = density;
     particle.near_density = near_density;
-    particle.pressure = pressure;
-    particle.near_pressure = near_pressure;
+    
     particles[particle_idx] = particle;
 } 
