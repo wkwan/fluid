@@ -82,7 +82,7 @@ pub struct GpuState {
 
 impl Default for GpuState {
     fn default() -> Self {
-        Self { enabled: true }
+        Self { enabled: false }
     }
 }
 
