@@ -4,7 +4,6 @@ use crate::sim::{Fluid3DParams, MouseInteraction3D, DrawLakeMode};
 use crate::raymarch::RayMarchingSettings;
 use crate::screenspace::{ScreenSpaceFluidSettings, RenderingMode};
 use crate::constants::{MOUSE_STRENGTH_LOW, MOUSE_STRENGTH_MEDIUM, MOUSE_STRENGTH_HIGH};
-use crate::sim::GpuState;
 
 pub struct UiPlugin;
 
@@ -19,7 +18,6 @@ fn draw_ui(
     mut draw_lake_mode: ResMut<DrawLakeMode>,
     mut fluid3d_params: ResMut<Fluid3DParams>,
     mut mouse_interaction_3d: ResMut<MouseInteraction3D>,
-    mut gpu_state: ResMut<GpuState>,
     mut reset_ev: EventWriter<crate::sim::ResetSim>,
     mut raymarching_settings: ResMut<RayMarchingSettings>,
     mut screen_space_settings: ResMut<ScreenSpaceFluidSettings>,
@@ -70,20 +68,6 @@ fn draw_ui(
 
                     
                     ui.label("Hotkey: Space - Spawn Duck");
-                    
-                    // GPU controls
-                    let gpu_response = egui::CollapsingHeader::new("GPU Acceleration")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            let mut gpu_enabled = gpu_state.enabled;
-                            if ui.checkbox(&mut gpu_enabled, "Enable GPU acceleration").changed() {
-                                gpu_state.enabled = gpu_enabled;
-                            }
-                            ui.label("Hotkey: G");
-                        });
-                    if gpu_response.header_response.clicked() {
-                        ui.separator();
-                    }
                     
                     // Mouse interaction controls
                     let mouse_response = egui::CollapsingHeader::new("Mouse Interaction")
@@ -382,9 +366,6 @@ fn draw_ui(
                         
                         // Reset draw lake mode to defaults
                         *draw_lake_mode = DrawLakeMode::default();
-                        
-                        // Reset GPU state to defaults
-                        *gpu_state = GpuState::default();
                         
                         // Reset screen space settings to defaults
                         *screen_space_settings = ScreenSpaceFluidSettings::default();

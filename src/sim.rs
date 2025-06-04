@@ -26,7 +26,6 @@ impl Plugin for SimulationPlugin {
             .init_resource::<MouseInteraction3D>()
             .init_resource::<PresetManager3D>()
             .init_resource::<GroundDeformationTimer>()
-            .init_resource::<GpuState>()
             .init_resource::<crate::raymarch::RayMarchingSettings>()
             .add_plugins(crate::raymarch::RayMarchPlugin)
             .add_plugins(crate::screenspace::ScreenSpaceFluidPlugin)
@@ -55,7 +54,6 @@ impl Plugin for SimulationPlugin {
                     recycle_particles_3d,
                 )
                     .chain()
-                    .run_if(|gpu_state: Res<GpuState>| !gpu_state.enabled),
             )
             .add_systems(Update, spawn_duck_at_cursor)
             .add_systems(Update, update_duck_physics)
@@ -71,18 +69,6 @@ impl Plugin for SimulationPlugin {
             .add_systems(Update, preset_hotkey_3d)
             // Handle duck spawning with spacebar in 3D mode
             .add_systems(Update, handle_duck_spawning);
-    }
-}
-
-// Track GPU state and errors
-#[derive(Resource, Clone)]
-pub struct GpuState {
-    pub enabled: bool,
-}
-
-impl Default for GpuState {
-    fn default() -> Self {
-        Self { enabled: false }
     }
 }
 
