@@ -10,10 +10,12 @@ mod camera;
 mod gpu_fluid;
 mod raymarch;
 mod screenspace;
+mod gpu_fluid_simple;
 
 use sim::SimulationPlugin;
 use ui::UiPlugin;
-use gpu_fluid::GpuSim3DPlugin;
+// use gpu_fluid::GpuSim3DPlugin;
+use gpu_fluid_simple::GpuSim3DSimplePlugin;
 
 fn main() {
     // Ensure the process working directory is the project root so the default
@@ -29,7 +31,8 @@ fn main() {
         .add_plugins((
             EguiPlugin { enable_multipass_for_primary_context: false },
             UiPlugin,
-            GpuSim3DPlugin,
+            // GpuSim3DPlugin,
+            GpuSim3DSimplePlugin,
             SimulationPlugin,
             FrameTimeDiagnosticsPlugin::default(),
         ))
