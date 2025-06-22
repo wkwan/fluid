@@ -10,8 +10,6 @@ Fluid simulation is done with a particle-based approach called Smoothed Particle
 
 ### Kanban board: https://github.com/users/wkwan/projects/2
 
-### Streaming development on https://twitch.tv/willkwan
-
 # To run demo:
 ```
 cargo run --release
